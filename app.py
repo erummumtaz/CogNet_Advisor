@@ -89,15 +89,11 @@ def get_model_name():
 def build_llm():
     primary = get_model_name()
     try:
-        # FIX: gpt-6 and other reasoning models do not support custom temperature
         is_reasoning_model = primary.startswith("gpt-6") or primary.startswith("o1") or primary.startswith("o3")
-        
         if is_reasoning_model:
             client = ChatOpenAI(model=primary) 
         else:
             client = ChatOpenAI(model=primary, temperature=0.2)
-            
-        # cheap ping to confirm model access
         client.invoke("ping")
         return client, primary
     except Exception as e:
@@ -121,7 +117,7 @@ def check_password() -> bool:
     if not stored:
         stored = os.environ.get("APP_PASSWORD", None)
     if not stored:
-        return True  # gate disabled
+        return True
 
     def enter():
         if st.session_state.get("password", "") == stored:
@@ -185,12 +181,11 @@ def detect_course_source(source_url: str, student_country: str,
                 break
     if uni_match or any(d in sl for d in cds):
         return "regional", f"Regional ({student_country})"
-    intl = ['coursera', 'udemy', 'edx', 'udacity', 'linkedin', 'datacamp',
-            'pluralsight', 'khanacademy', 'mit.edu', 'stanford.edu', 'harvard.edu']
-    if any(p in sl for p in intl):
-        return "international", "International (Global Platform)"
-    if '.edu' in sl and not any(d in sl for d in cds):
-        return "international", "International (Foreign University)"
+    
+    # FIX: Detect any valid URL as International if it's not the home country
+    if sl.startswith("http"):
+        return "international", "International (Foreign URL)"
+        
     return "semantic", "Semantic Estimation"
 
 
@@ -879,9 +874,19 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
     }
     ps = {"Visual": profile["visual"], "Sensing": profile["sensing"],
           "Active": profile["active"], "Global": profile["global"]}
+    
+    # FIX: Map node keys to their dominant score for display
+    display_scores = {
+        "Visual": dom['Input'][1],
+        "Sensing": dom['Perception'][1],
+        "Active": dom['Processing'][1],
+        "Global": dom['Understanding'][1]
+    }
+    
     for p, lbl in dl.items():
-        G.add_node(p, type="pole", score=ps[p], label=lbl)
+        G.add_node(p, type="pole", score=display_scores[p], label=lbl)
         G.add_edge(student_name, p, weight=ps[p], style="solid", color="gray")
+        
     sc = {"regional": "#2ECC71", "international": "#3498DB", "semantic": "#F1C40F"}
     color_map = {}
     for cname, feats in course_features.items():
@@ -941,7 +946,7 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
           for u, v in dashed if G[u][v].get('weight', 0) > 0.01}
     nx.draw_networkx_edge_labels(G, pos, edge_labels=el, font_size=8,
                                  label_pos=0.5, rotate=False, ax=ax)
-    for p, s in ps.items():
+    for p, s in display_scores.items():
         x, y = pos[p]
         ax.text(x, y - 0.18, f"{s:.2f}", fontsize=8, ha='center', va='center',
                 color='black', fontweight='bold',
@@ -1771,7 +1776,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             raw = dd.get('source_url', '')
             url = clean_source_url(raw)
             if url and url.lower().startswith('http'):
-                url_disp = url if len(url) < 55 else url[:52] + "..."
+                url_disp = textwrap.fill(url, width=40)
                 pdf_status = "Cached PDF"
             else:
                 url_disp = "(semantic fallback — no URL)"
@@ -2008,119 +2013,4 @@ def main():
                 iv = dd['ite']
                 if abs(iv) < 1e-6: iv = 0.0
                 st.write(f"**{c}**: Causal ITE = {iv:+.4f} "
-                         f"(Legacy: {dd['legacy_ite']:+.3f}), Grade = {dd['predicted_grade']:.3f} — "
-                         f"Source: {src_disp} — {dd.get('source_label', '')} — PDF: {pdf_status}")
-
-            st.subheader("Master Causal Explanation")
-            st.write(st.session_state.explanation)
-
-            st.subheader("Suggested Learning Resources")
-            for plat, cl in get_learning_resources(st.session_state.best_course).items():
-                st.write(f"**{plat}:** {', '.join(cl)}")
-
-            st.subheader("Model Validation: 5-Fold Cross-Validation")
-            ds = os.path.join(BASE_DIR, "CogNet_Advisory_Data.csv")
-            if os.path.exists(ds):
-                with st.spinner("Running cross-validation..."):
-                    try:
-                        dfc = pd.read_csv(ds, on_bad_lines='skip', low_memory=False)
-                        dfc.rename(columns={'Visual': 'visual', 'Sensing': 'sensing',
-                                           'Active': 'active', 'Global': 'global',
-                                           'GPA': 'prior_gpa', 'Course_Taken': 'course_taken',
-                                           'Final_Grade': 'final_grade'}, inplace=True)
-                        dfc, _ = clean_dataset(dfc)
-                        cvr = run_cross_validation_with_baselines(dfc, n_splits=5)
-                        st.dataframe(cvr, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"CV error: {e}")
-            else:
-                st.warning("Dataset not found for CV.")
-
-            if st.session_state.simple_fig is not None:
-                st.subheader("Multi-Course Cognitive Overlay")
-                st.pyplot(st.session_state.simple_fig)
-
-            if st.session_state.cg:
-                st.subheader("Comprehensive Cognitive Graph")
-                fig = visualize_comparative_cognitive_graph(
-                    st.session_state.cg, st.session_state.profile,
-                    st.session_state.comparison_results,
-                    title=f"Comprehensive Cognitive Graph: {name}")
-                st.pyplot(fig)
-
-            with st.expander("Reasoning Trace"):
-                for s in st.session_state.cg.reasoning_trace:
-                    st.write(f"- {s}")
-
-            with st.expander("🔧 RAG Retrieval Log"):
-                for entry in st.session_state.get("rag_log", []):
-                    st.text(entry)
-
-            cd, cr = st.columns([2, 1])
-            with cd:
-                if st.session_state.pdf_buffer is not None:
-                    st.download_button("Download Full Report (PDF)",
-                                       data=st.session_state.pdf_buffer,
-                                       file_name=f"CogNet_Advisor_Report_{name}.pdf",
-                                       mime="application/pdf", use_container_width=True)
-            with cr:
-                if st.button("Start New Assessment", use_container_width=True):
-                    for k in ["start_assessment", "profile", "course_features",
-                              "comparison_results", "best_course", "explanation",
-                              "cg", "analysis_started", "simple_fig", "pdf_buffer"]:
-                        st.session_state[k] = None
-                    st.session_state["answers"] = []
-                    st.session_state["rag_log"] = []
-                    st.session_state.agent.answers = []
-                    st.rerun()
-        elif st.session_state.profile is not None:
-            if st.button("Run Full Analysis (this may take a few minutes)"):
-                st.session_state.analysis_started = True
-                st.rerun()
-
-        if st.session_state.get("analysis_started", False) and st.session_state.best_course is None:
-            with st.spinner("Fetching curriculum data and analyzing..."):
-                prep = BackgroundRAGPreparer(llm, embeddings)
-                prep.run(country, degree, courses, university if university else None)
-                st.session_state.rag_log = prep.log
-                cf = prep.course_features if prep.is_ready else {
-                    c: {"C_vis": 0.5, "C_prac": 0.5, "C_struct": 0.5,
-                        "credit_hours": "Unknown", "source_url": "Fallback"} for c in courses
-                }
-                st.session_state.course_features = cf
-
-                bc, crs, exp, _ = get_comparative_analysis(
-                    st.session_state.profile, cf, llm,
-                    student_country=country,
-                    student_university=university if university else None)
-                st.session_state.best_course = bc
-                st.session_state.comparison_results = crs
-                st.session_state.explanation = exp
-
-                sf = visualize_multi_course_graph(
-                    st.session_state.profile, cf, crs, name,
-                    student_country=country,
-                    student_university=university if university else None)
-                st.session_state.simple_fig = sf
-
-                cg = generate_comparative_cognitive_graph(
-                    student_name=name, profile=st.session_state.profile,
-                    courses=courses, course_features=cf,
-                    comparison_results=crs, best_course=bc,
-                    country=country, degree=degree, semester=str(semester),
-                    university=university if university else None,
-                    n_steps=3, llm=llm)
-                st.session_state.cg = cg
-
-                pb = generate_pdf_report(
-                    st.session_state.profile, crs, exp, cg, sf,
-                    name, country, degree, semester, university, courses, cf,
-                    logo_path=LOGO_PATH if LOGO_PATH and os.path.exists(LOGO_PATH) else None)
-                st.session_state.pdf_buffer = pb
-
-                st.session_state.analysis_started = False
-                st.rerun()
-
-
-if __name__ == "__main__":
-    main()
+                         f"(Leg

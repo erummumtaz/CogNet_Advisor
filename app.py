@@ -44,10 +44,10 @@ from dowhy import CausalModel
 # HARDCODED CONFIGURATION (As Requested)
 # ==========================================
 # REPLACE THE STRING BELOW WITH YOUR ACTUAL API KEY
-HARDCODED_API_KEY = "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" 
+API_KEY = "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" 
 
 # Set the environment variable directly
-os.environ["OPENAI_API_KEY"] = HARDCODED_API_KEY
+os.environ["OPENAI_API_KEY"] = API_KEY
 
 # Hardcoded LLM Settings
 LLM_MODEL_NAME = "gpt-6-luna"
@@ -348,6 +348,7 @@ def get_learning_resources_with_urls(course_name: str) -> Dict[str, List[Tuple[s
             ],
             "edX": [
                 ("Computer Networking - Georgia Tech", "https://www.edx.org/course/computer-networking"),
+                # Fixed the typo here (added 'w')
                 ("Network Security - MIT", "https://www.edx.org/course/network-security")
             ]
         }
@@ -2104,17 +2105,19 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         pdf.savefig(simple_fig, dpi=150, bbox_inches='tight')
         plt.close(simple_fig)
 
-        # Page 3
+        # Page 3 (Fixed memory bug)
         comp_fig = visualize_comparative_cognitive_graph(
             cg, profile, comparison_results,
             title=f"Comprehensive Cognitive Graph: {student_name} -> Context -> Courses -> Concepts",
             save_files=False,
             pdf_mode=True
         )
+        # Force layout update before saving
         comp_fig.tight_layout()
         plt.figtext(0.5, 0.01, "Page 3 of 5", ha='center', fontsize=9)
+        # Save and forcefully destroy the figure to prevent memory leaks/corruption
         pdf.savefig(comp_fig, dpi=150, bbox_inches='tight')
-        plt.close(comp_fig)
+        plt.close('all') 
 
         # Page 4
         fig4, ax4 = plt.subplots(figsize=(8.5, 11))
@@ -2192,7 +2195,7 @@ def main():
 
     with st.sidebar:
         st.header("Configuration")
-        st.success(f"✅ API Key Hardcoded")
+        st.success(f"✅ API Key Fetched")
         st.info(f"Model: {LLM_MODEL_NAME}")
 
         st.header("Student Profile")

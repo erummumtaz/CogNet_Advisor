@@ -41,7 +41,7 @@ from dowhy import CausalModel
 
 
 # ==========================================
-# HARDCODED CONFIGURATION (As Requested)
+# CONFIGURATION (As Requested)
 # ==========================================
 # REPLACE THE STRING BELOW WITH YOUR ACTUAL API KEY
 API_KEY = "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" 
@@ -49,7 +49,7 @@ API_KEY = "sk-proj-R9ENsecGSF-h7iMFI38l3OVxMUmKMCuXhCtcN1wQ_nZmmQitIwoGN-SiiuD2M
 # Set the environment variable directly
 os.environ["OPENAI_API_KEY"] = API_KEY
 
-# Hardcoded LLM Settings
+# LLM Settings
 LLM_MODEL_NAME = "gpt-6-luna"
 LLM_TEMPERATURE = 0.2
 # ==========================================

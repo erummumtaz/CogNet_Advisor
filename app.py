@@ -89,7 +89,14 @@ def get_model_name():
 def build_llm():
     primary = get_model_name()
     try:
-        client = ChatOpenAI(model=primary, temperature=0.2)
+        # FIX: gpt-6 and other reasoning models do not support custom temperature
+        is_reasoning_model = primary.startswith("gpt-6") or primary.startswith("o1") or primary.startswith("o3")
+        
+        if is_reasoning_model:
+            client = ChatOpenAI(model=primary) 
+        else:
+            client = ChatOpenAI(model=primary, temperature=0.2)
+            
         # cheap ping to confirm model access
         client.invoke("ping")
         return client, primary
@@ -964,13 +971,12 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
     return fig
 
 
-# SECTION 8: REASONING ENGINE (FIX 3: no pole→course explosion)
+# SECTION 8: REASONING ENGINE
 def iterative_reasoning_step(V, E, X, a, profile, course_features, concepts,
                              best_course, step_num, initial_a=None, course_names=None):
     frontier = [n for n in V if a.get(n, 0) > 0.05 and n not in ['Student', 'Context']]
     for node in frontier:
         if node in ['Visual', 'Sensing', 'Active', 'Global']:
-            # FIX: only wire best course, not every candidate
             if not any(e[0] == node and e[1] == best_course for e in E):
                 E.append((node, best_course, profile.get(node.lower(), 0.5) * 0.5))
         if node == best_course:
@@ -1156,7 +1162,7 @@ def generate_comparative_cognitive_graph(student_name, profile, courses, course_
     return cg
 
 
-# SECTION 9: COMPREHENSIVE GRAPH VIZ (FIX 2: axis off early + label cap)
+# SECTION 9: COMPREHENSIVE GRAPH VIZ
 def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
                                           title="Comprehensive Cognitive Graph",
                                           save_files=False, filename_base="cognitive_graph",
@@ -1179,7 +1185,7 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
         "recommended_edge": "#D32F2F", "other_edge": "#1565C0",
     }
     fig, ax = plt.subplots(figsize=(20, 14), facecolor="white")
-    ax.axis("off")   # FIX: axis off BEFORE any drawing
+    ax.axis("off")
     plt.sca(ax)
     ctx_names = [c for c in [cg.country, cg.degree,
                               f"Year: {cg.semester}", cg.university] if c]
@@ -1247,7 +1253,6 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
             el[(u, v)] = f"ITE: {d['ite']:.4f}"
         elif d.get("prob", 0) > 0.05:
             el[(u, v)] = f"p={d['prob']:.2f}"
-    # FIX: only label edges touching best course + cap to 40
     if el:
         filtered = {k: v for k, v in el.items()
                     if k[1] == cg.best_course or k[0] == cg.best_course}
@@ -1635,7 +1640,7 @@ def run_cross_validation_with_baselines(df, n_splits=5):
     return pd.DataFrame(summary).T
 
 
-# SECTION 12: PDF REPORT (FIX 1: 7 pages, no overlap)
+# SECTION 12: PDF REPORT
 def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig,
                         student_name, country, degree, semester, university,
                         courses, course_features, logo_path=None):

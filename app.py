@@ -32,7 +32,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import KFold, GroupKFold # Added GroupKFold
+from sklearn.model_selection import KFold, GroupKFold
 from econml.dml import LinearDML
 from sklearn.ensemble import GradientBoostingRegressor
 
@@ -40,43 +40,35 @@ import dowhy
 from dowhy import CausalModel
 
 
-# SECTION 2: API KEY & PATH MANAGEMENT
+# ==========================================
+# HARDCODED CONFIGURATION (As Requested)
+# ==========================================
+# REPLACE THE STRING BELOW WITH YOUR ACTUAL API KEY
+HARDCODED_API_KEY = "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" 
 
-API_KEY_FILE = ".api_key"
-CACHE_DIR = "./cache/"
-os.makedirs(CACHE_DIR, exist_ok=True)
+# Set the environment variable directly
+os.environ["OPENAI_API_KEY"] = HARDCODED_API_KEY
+
+# Hardcoded LLM Settings
+LLM_MODEL_NAME = "gpt-6-luna"
+LLM_TEMPERATURE = 0.2
+# ==========================================
+
+
+# SECTION 2: PATH MANAGEMENT
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(BASE_DIR, "CognetAdvisor.png")
 if not os.path.exists(LOGO_PATH):
     LOGO_PATH = None
 
+# Dynamically define dataset path (can be overridden via Environment Variable)
+DATASET_FILENAME = os.getenv("COGNET_DATASET_PATH", "CogNet_Advisory_Data.csv")
+DATASET_PATH = os.path.join(BASE_DIR, DATASET_FILENAME)
 
-def load_api_key():
-    try:
-        if "OPENAI_API_KEY" in st.secrets:
-            return st.secrets["OPENAI_API_KEY"]
-    except:
-        pass
-    key = os.environ.get("OPENAI_API_KEY")
-    if key:
-        return key
-    if os.path.exists(API_KEY_FILE):
-        with open(API_KEY_FILE, "r") as f:
-            return f.read().strip()
-    return None
-
-
-def save_api_key(key: str):
-    with open(API_KEY_FILE, "w") as f:
-        f.write(key.strip())
-
-
-def clear_api_key():
-    if os.path.exists(API_KEY_FILE):
-        os.remove(API_KEY_FILE)
-    if "OPENAI_API_KEY" in os.environ:
-        del os.environ["OPENAI_API_KEY"]
+# Dynamically define cache directory
+CACHE_DIR = os.getenv("COGNET_CACHE_DIR", "./cache/")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # SECTION 2.5: SOURCE DETECTION AND CONTENT COMPARISON
@@ -370,7 +362,7 @@ def get_learning_resources_with_urls(course_name: str) -> Dict[str, List[Tuple[s
     return course_map[course_name]
 
 
-# SECTION 3: FSLSM QUESTION BANK (44 items)
+# SECTION 3: FSLSM QUESTION BANK (44 items - COMPLETE)
 
 FSLSM_QUESTIONS = [
     ("I understand something better after I (a) try it out. (b) think it through.", "ACT_REF", "a"),
@@ -433,21 +425,6 @@ def extract_options(q_text):
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def safe_llm_call(chain, input_data):
     return chain.invoke(input_data)
-
-
-def download_pdf(url: str, timeout: int = 15) -> Optional[str]:
-    filename = f"{hashlib.md5(url.encode()).hexdigest()[:8]}.pdf"
-    path = os.path.join(CACHE_DIR, filename)
-    if os.path.exists(path) and os.path.getsize(path) > 1000:
-        return path
-    try:
-        response = requests.get(url, timeout=timeout, verify=False)
-        response.raise_for_status()
-        with open(path, "wb") as f:
-            f.write(response.content)
-        return path
-    except Exception:
-        return None
 
 
 def build_rag_from_pdf(pdf_path: str, embeddings) -> Optional[Chroma]:
@@ -611,12 +588,15 @@ class BackgroundRAGPreparer:
                 domain_patterns.append(f"{acronym}.edu.pk")
                 domain_patterns.append(f"{acronym}.pk")
                 domain_patterns.append(f"{acronym}.edu")
+            
+            uni_short = university.split()[0] if university else ""
             with DDGS() as ddgs:
                 queries = [
-                    f"{course} {university} {degree} syllabus",
-                    f"{course} {university} course outline",
-                    f"{course} {university} syllabus",
-                    f"{course} {university} academic courses"
+                    f"{course} {university} {degree} syllabus filetype:pdf",
+                    f"{course} {university} course outline pdf",
+                    f"site:ssuet.edu.pk {course} syllabus",
+                    f"site:edu.pk {course} {uni_short} syllabus pdf",
+                    f"{course} {degree} syllabus site:.edu.pk filetype:pdf"
                 ]
                 for q in queries:
                     results = list(ddgs.text(q, max_results=5))
@@ -750,15 +730,16 @@ class BackgroundRAGPreparer:
             features["credit_hours"] = credit_hours
             return features
         except Exception:
-            return {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5, "credit_hours":"3+0"}
+            return self._apply_semantic_fallback(course)
 
     def _apply_semantic_fallback(self, course: str) -> Dict:
         try:
             prompt = ChatPromptTemplate.from_messages([
                 SystemMessage(content=(
-                    "You are an expert in CS curricula. Estimate Visual, Practical, and Structured scores (0.0 to 1.0) "
-                    "for this course name based on its typical university syllabus. Be specific. Do not output 0.5 for all. "
-                    "Output JSON with C_vis, C_prac, C_struct."
+                    "You are an expert in CS curricula. Estimate Visual (C_vis), Practical (C_prac), and Structured (C_struct) scores (0.0 to 1.0) "
+                    "for this course based on its typical syllabus. You MUST provide distinct scores. "
+                    "For example: Computer Graphics -> C_vis: 0.9, C_prac: 0.7. Data Structures -> C_vis: 0.3, C_prac: 0.8. "
+                    "Output strict JSON with keys C_vis, C_prac, C_struct."
                 )),
                 HumanMessage(content=f"Course: {course}")
             ])
@@ -767,21 +748,40 @@ class BackgroundRAGPreparer:
             match = re.search(r'\{.*\}', res, re.DOTALL)
             if match:
                 features = json.loads(match.group())
-            else:
-                features = {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5}
-            features["C_vis"] = max(0.2, min(1.0, features.get("C_vis", 0.5)))
-            features["C_prac"] = max(0.1, min(1.0, features.get("C_prac", 0.5)))
-            features["C_struct"] = max(0.1, min(1.0, features.get("C_struct", 0.5)))
-            course_lower = course.lower()
-            lab_keywords = ["lab", "practical", "programming", "graphics", "networks", "compiler",
-                            "database", "web", "software", "game", "hci", "human computer", "interaction"]
-            if any(k in course_lower for k in lab_keywords):
-                features["credit_hours"] = "3+1"
-            else:
-                features["credit_hours"] = "3+0"
-            return features
-        except:
-            return {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5, "credit_hours":"3+0"}
+                if features.get("C_vis") != 0.5 or features.get("C_prac") != 0.5 or features.get("C_struct") != 0.5:
+                    features["C_vis"] = max(0.1, min(1.0, features.get("C_vis", 0.5)))
+                    features["C_prac"] = max(0.1, min(1.0, features.get("C_prac", 0.5)))
+                    features["C_struct"] = max(0.1, min(1.0, features.get("C_struct", 0.5)))
+                    return features
+        except Exception:
+            pass
+
+        course_lower = course.lower()
+        c_vis, c_prac, c_struct = 0.5, 0.5, 0.5
+        
+        if any(k in course_lower for k in ["graphics", "hci", "interaction", "vision", "game", "multimedia", "rendering", "image"]):
+            c_vis = 0.85
+        elif any(k in course_lower for k in ["database", "networks", "operating", "compiler", "architecture", "automata"]):
+            c_vis = 0.30
+            
+        if any(k in course_lower for k in ["lab", "programming", "practical", "project", "database", "networks", "software", "development", "web", "security"]):
+            c_prac = 0.80
+        elif any(k in course_lower for k in ["theory", "automata", "math", "calculus", "discrete", "architecture"]):
+            c_prac = 0.30
+            
+        if any(k in course_lower for k in ["theory", "automata", "architecture", "compiler", "security", "math", "calculus"]):
+            c_struct = 0.80
+        elif any(k in course_lower for k in ["project", "research", "capstone", "management", "hci"]):
+            c_struct = 0.30
+
+        features = {"C_vis": c_vis, "C_prac": c_prac, "C_struct": c_struct}
+
+        if any(k in course_lower for k in ["lab", "practical", "programming", "graphics", "networks", "compiler", "database", "web", "software", "game", "hci"]):
+            features["credit_hours"] = "3+1"
+        else:
+            features["credit_hours"] = "3+0"
+            
+        return features
 
     def _ensure_distinct_features(self, features_dict: Dict[str, Dict]) -> Dict[str, Dict]:
         if len(features_dict) <= 1:
@@ -826,11 +826,11 @@ class BackgroundRAGPreparer:
                                 features["source_url"] = self._last_success_url if self._last_success_url else url
                                 self.course_features[c] = features
                                 continue
-                    else:  # html
+                    else:
                         scraped_text = self._scrape_course_page(url)
                         if scraped_text:
                             features = self._extract_features_from_context(c, scraped_text)
-                            features["source_url"] = f"Scraped from {url}" 
+                            features["source_url"] = f"Scraped from {url}"
                             self.course_features[c] = features
                             continue
                 pdf_url = self._search_course_outline(c, degree, country, university)
@@ -1561,17 +1561,16 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
 # SECTION 10: CAUSAL ANALYSIS
 
 def get_comparative_analysis(profile, course_features, llm, student_country="Pakistan", student_university=None):
-    dataset_path = os.path.join(BASE_DIR, "CogNet_Advisory_Data.csv")
-    if not os.path.exists(dataset_path):
-        st.error(f"Original dataset `CogNet_Advisory_Data.csv` not found at {dataset_path}.")
+    if not os.path.exists(DATASET_PATH):
+        st.error(f"Original dataset `{os.path.basename(DATASET_PATH)}` not found at {DATASET_PATH}.")
         st.markdown("Please ensure the file is in the same directory as the script.")
         st.stop()
     
-    st.info("Using original dataset `CogNet_Advisory_Data.csv`.")
+    st.info(f"Using dataset `{os.path.basename(DATASET_PATH)}`.")
     
     try:
-        df = pd.read_csv(dataset_path)
-        st.success(f"Loaded {len(df)} records from: {dataset_path}")
+        df = pd.read_csv(DATASET_PATH)
+        st.success(f"Loaded {len(df)} records from: {DATASET_PATH}")
         
         df.rename(columns={
             'Visual': 'visual',
@@ -1633,7 +1632,6 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     
     identified_estimand = model.identify_effect(proceed_when_unidentifiable=True)
     
-    # 1. Update DML setup to include C_prac and C_struct as confounders (W)
     X = df[['visual', 'sensing', 'active', 'global']].values
     T = df['C_vis'].values
     Y = df['final_grade'].values
@@ -1665,7 +1663,6 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
         if abs(causal_ite) < 0.0005:
             causal_ite = 0.0
         
-        # Use the dataset average as a baseline, then add the causal impact
         baseline_grade = df['final_grade'].mean()
         predicted_grade = max(0, min(1, baseline_grade + causal_ite))
         
@@ -1811,7 +1808,6 @@ def run_cross_validation_with_baselines(df, n_splits=5):
     X = df[feature_cols].values
     y = df['final_grade'].values
     
-    # Group by Student_ID to prevent leakage
     groups = df['Student_ID'].fillna('unknown').values
     kf = GroupKFold(n_splits=n_splits)
     
@@ -2051,7 +2047,6 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         y_pos = draw_table(ax1, y_pos, "LEARNING STYLE MATCH", match_headers, match_data,
                            col_widths=[0.25, 0.25, 0.25, 0.25], bbox_width=0.9, data_fontsize=8)
 
-        # Comparative ITE Results (Fixed)
         ite_headers = ["Course", "Causal ITE", "Grade"]
         ite_data = []
         for course, data in comparison_results.items():
@@ -2064,7 +2059,6 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         y_pos = draw_table(ax1, y_pos, "COMPARATIVE ITE RESULTS", ite_headers, ite_data,
                            col_widths=[0.4, 0.3, 0.3], bbox_width=0.9, data_fontsize=8)
 
-        # Scraped Sources (Fixed)
         src_headers = ["Course", "Source URL", "Source Type", "PDF Status"]
         src_data = []
         for course, data in comparison_results.items():
@@ -2146,7 +2140,6 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         ax5.text(0.5, y_table, "COMPARATIVE ITE RESULTS", fontsize=12, fontweight='bold',
                  ha='center', va='top', transform=ax5.transAxes)
         table_y = y_table - 0.04
-        # Fixed Page 5 Table
         headers = ["Course", "Causal ITE", "Grade"]
         data = []
         for course, data_dict in comparison_results.items():
@@ -2198,24 +2191,9 @@ def main():
         st.markdown("*Cognitive Graph-Based Personalized Course Recommendation System using FSLSM*")
 
     with st.sidebar:
-        st.header("API Key")
-        saved_key = load_api_key()
-        if saved_key:
-            st.success("API key loaded from local storage.")
-            if st.button("Clear saved API key"):
-                clear_api_key()
-                st.rerun()
-            api_key = saved_key
-        else:
-            api_key = st.text_input("OpenAI API Key", type="password")
-            remember = st.checkbox("Remember my API key (saved locally)")
-            if api_key and remember:
-                save_api_key(api_key)
-                st.success("Key saved for future sessions.")
-        if not api_key:
-            st.warning("Please enter your OpenAI API key.")
-            st.stop()
-        os.environ["OPENAI_API_KEY"] = api_key
+        st.header("Configuration")
+        st.success(f"✅ API Key Hardcoded")
+        st.info(f"Model: {LLM_MODEL_NAME}")
 
         st.header("Student Profile")
         name = st.text_input("Name", "Student")
@@ -2236,8 +2214,8 @@ def main():
         if st.button("Start Assessment", type="primary"):
             st.session_state["start_assessment"] = True
 
-    # Upgraded to gpt-6-luna
-    llm = ChatOpenAI(model="gpt-6-luna", temperature=0.2)
+    # Use the Hardcoded Model and API Key
+    llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=LLM_TEMPERATURE)
     embeddings = OpenAIEmbeddings()
 
     if "start_assessment" not in st.session_state:
@@ -2348,10 +2326,9 @@ def main():
             st.markdown("*Comparing your Double ML against standard ML baselines on the same dataset.*")
             
             with st.spinner("Running cross-validation..."):
-                dataset_path = os.path.join(BASE_DIR, "CogNet_Advisory_Data.csv")
-                if os.path.exists(dataset_path):
+                if os.path.exists(DATASET_PATH):
                     try:
-                        df_cv = pd.read_csv(dataset_path)
+                        df_cv = pd.read_csv(DATASET_PATH)
                         df_cv.rename(columns={
                             'Visual': 'visual',
                             'Sensing': 'sensing',
@@ -2389,7 +2366,7 @@ def main():
                     except Exception as e:
                         st.warning(f"Error loading dataset for cross-validation: {e}")
                 else:
-                    st.warning("Original dataset `CogNet_Advisory_Data.csv` not found for cross-validation. Please ensure the file exists.")
+                    st.warning(f"Original dataset not found at `{DATASET_PATH}` for cross-validation. Please ensure the file exists.")
 
             if st.session_state.simple_fig is not None:
                 st.subheader("Multi-Course Cognitive Overlay")

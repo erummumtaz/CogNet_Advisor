@@ -32,7 +32,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import KFold, GroupKFold
+from sklearn.model_selection import KFold
 from econml.dml import LinearDML
 from sklearn.ensemble import GradientBoostingRegressor
 
@@ -40,40 +40,56 @@ import dowhy
 from dowhy import CausalModel
 
 
-# ==========================================
-# CONFIGURATION (As Requested)
-# ==========================================
-# REPLACE THE STRING BELOW WITH YOUR ACTUAL API KEY
-API_KEY = "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" 
 
-# Set the environment variable directly
-os.environ["OPENAI_API_KEY"] = API_KEY
+# SECTION 2: API KEY & PATH MANAGEMENT
 
-# LLM Settings
-LLM_MODEL_NAME = "gpt-6-luna"
-LLM_TEMPERATURE = 0.2
-# ==========================================
-
-
-# SECTION 2: PATH MANAGEMENT
+API_KEY_FILE = ".api_key"
+CACHE_DIR = "./cache/"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(BASE_DIR, "CognetAdvisor.png")
 if not os.path.exists(LOGO_PATH):
     LOGO_PATH = None
 
-# Dynamically define dataset path (can be overridden via Environment Variable)
-DATASET_FILENAME = os.getenv("COGNET_DATASET_PATH", "CogNet_Advisory_Data.csv")
-DATASET_PATH = os.path.join(BASE_DIR, DATASET_FILENAME)
 
-# Dynamically define cache directory
-CACHE_DIR = os.getenv("COGNET_CACHE_DIR", "./cache/")
-os.makedirs(CACHE_DIR, exist_ok=True)
+def load_api_key():
+    # 1. Try Streamlit secrets first (for deployment on Streamlit Cloud)
+    try:
+        if "OPENAI_API_KEY" in st.secrets:
+            return st.secrets["OPENAI_API_KEY"]
+    except:
+        pass
+
+    # 2. Try environment variable (local development)
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        return key
+
+    # 3. Try local .api_key file (legacy / local)
+    if os.path.exists(API_KEY_FILE):
+        with open(API_KEY_FILE, "r") as f:
+            return f.read().strip()
+
+    return None
+
+
+def save_api_key(key: str):
+    with open(API_KEY_FILE, "w") as f:
+        f.write(key.strip())
+
+
+def clear_api_key():
+    if os.path.exists(API_KEY_FILE):
+        os.remove(API_KEY_FILE)
+    if "OPENAI_API_KEY" in os.environ:
+        del os.environ["OPENAI_API_KEY"]
 
 
 # SECTION 2.5: SOURCE DETECTION AND CONTENT COMPARISON
 
 def get_country_domains(country: str) -> List[str]:
+    """Return country-specific domain patterns based on the student's country."""
     country_domain_map = {
         "Pakistan": ['.pk', '.edu.pk'],
         "USA": ['.us', '.edu'],
@@ -105,13 +121,22 @@ def get_country_domains(country: str) -> List[str]:
     return country_domain_map.get(country, [])
 
 
-def detect_course_source(source_url: str, student_country: str, student_university: str = None) -> Tuple[str, str]:
+def detect_course_source(
+    source_url: str,
+    student_country: str,
+    student_university: str = None
+) -> Tuple[str, str]:
+    """
+    Dynamically detect whether a course is regional, international, or semantic.
+    Returns: (source_type, source_label)
+    """
     if source_url in ['Unknown', 'Semantic estimation (no content found)', 'Fallback']:
         return "semantic", "Semantic Estimation"
     
     source_lower = source_url.lower()
     country_domains = get_country_domains(student_country)
     
+    # Check if source contains the student's university name
     university_match = False
     if student_university:
         uni_parts = student_university.lower().replace(' ', '').split(',')
@@ -120,11 +145,13 @@ def detect_course_source(source_url: str, student_country: str, student_universi
                 university_match = True
                 break
     
+    # Check if source contains country-specific domain
     country_domain_match = any(domain in source_lower for domain in country_domains)
     
     if university_match or country_domain_match:
         return "regional", f"Regional ({student_country})"
     
+    # Check for international platforms
     international_patterns = [
         'coursera', 'udemy', 'edx', 'udacity', 'linkedin', 'datacamp',
         'pluralsight', 'khanacademy', 'mit.edu', 'stanford.edu', 'harvard.edu'
@@ -132,6 +159,7 @@ def detect_course_source(source_url: str, student_country: str, student_universi
     if any(pattern in source_lower for pattern in international_patterns):
         return "international", "International (Global Platform)"
     
+    # Check for foreign university
     if '.edu' in source_lower and not any(domain in source_lower for domain in country_domains):
         return "international", "International (Foreign University)"
     
@@ -139,6 +167,9 @@ def detect_course_source(source_url: str, student_country: str, student_universi
 
 
 def get_course_content_comparison(course_name: str, source_type: str, features: Dict) -> Dict:
+    """
+    Generate a comparison of course contents based on source type and features.
+    """
     comparison = {
         "regional": {
             "format": "Detailed PDF syllabus",
@@ -172,6 +203,7 @@ def get_course_content_comparison(course_name: str, source_type: str, features: 
 
 
 def get_learning_resources(course_name: str) -> Dict[str, List[str]]:
+    """Suggest online learning platforms and courses based on the recommended course."""
     platform_map = {
         "Computer Graphics": {
             "Coursera": ["Computer Graphics - UC San Diego", "Interactive Computer Graphics - Stanford"],
@@ -227,8 +259,13 @@ def get_learning_resources(course_name: str) -> Dict[str, List[str]]:
         "edX": [f"Search for courses related to {course_name}"]
     })
 
+# SECTION 2.6: RESOURCES WITH URLS
 
 def get_learning_resources_with_urls(course_name: str) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Return dict of platform -> list of (course_name, url) for the given course.
+    The mapping is dynamic per course name – extend as needed.
+    """
     course_map = {
         "Computer Graphics": {
             "Coursera": [
@@ -348,7 +385,6 @@ def get_learning_resources_with_urls(course_name: str) -> Dict[str, List[Tuple[s
             ],
             "edX": [
                 ("Computer Networking - Georgia Tech", "https://www.edx.org/course/computer-networking"),
-                # Fixed the typo here (added 'w')
                 ("Network Security - MIT", "https://www.edx.org/course/network-security")
             ]
         }
@@ -366,6 +402,7 @@ def get_learning_resources_with_urls(course_name: str) -> Dict[str, List[Tuple[s
 # SECTION 3: FSLSM QUESTION BANK (44 items - COMPLETE)
 
 FSLSM_QUESTIONS = [
+    # Active/Reflective Dimension (11 questions)
     ("I understand something better after I (a) try it out. (b) think it through.", "ACT_REF", "a"),
     ("I would rather be considered (a) realistic. (b) innovative.", "SEN_INT", "a"),
     ("When I think about what I did yesterday, I am most likely to get (a) a picture. (b) words.", "VIS_VER", "a"),
@@ -426,6 +463,21 @@ def extract_options(q_text):
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def safe_llm_call(chain, input_data):
     return chain.invoke(input_data)
+
+
+def download_pdf(url: str, timeout: int = 15) -> Optional[str]:
+    filename = f"{hashlib.md5(url.encode()).hexdigest()[:8]}.pdf"
+    path = os.path.join(CACHE_DIR, filename)
+    if os.path.exists(path) and os.path.getsize(path) > 1000:
+        return path
+    try:
+        response = requests.get(url, timeout=timeout, verify=False)
+        response.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(response.content)
+        return path
+    except Exception:
+        return None
 
 
 def build_rag_from_pdf(pdf_path: str, embeddings) -> Optional[Chroma]:
@@ -589,15 +641,12 @@ class BackgroundRAGPreparer:
                 domain_patterns.append(f"{acronym}.edu.pk")
                 domain_patterns.append(f"{acronym}.pk")
                 domain_patterns.append(f"{acronym}.edu")
-            
-            uni_short = university.split()[0] if university else ""
             with DDGS() as ddgs:
                 queries = [
-                    f"{course} {university} {degree} syllabus filetype:pdf",
-                    f"{course} {university} course outline pdf",
-                    f"site:ssuet.edu.pk {course} syllabus",
-                    f"site:edu.pk {course} {uni_short} syllabus pdf",
-                    f"{course} {degree} syllabus site:.edu.pk filetype:pdf"
+                    f"{course} {university} {degree} syllabus",
+                    f"{course} {university} course outline",
+                    f"{course} {university} syllabus",
+                    f"{course} {university} academic courses"
                 ]
                 for q in queries:
                     results = list(ddgs.text(q, max_results=5))
@@ -671,14 +720,7 @@ class BackgroundRAGPreparer:
     def _extract_features_from_context(self, course: str, context: str) -> Dict:
         try:
             prompt = ChatPromptTemplate.from_messages([
-                SystemMessage(content=(
-                    "You are an expert in CS curriculum analysis. Rate this course on three dimensions from 0.0 to 1.0:\n"
-                    "- C_vis (Visual): How much visual content (diagrams, graphics, GUI design) is in the syllabus?\n"
-                    "- C_prac (Practical): How much hands-on coding, labs, or practical work is required?\n"
-                    "- C_struct (Structured): How rigidly structured is the syllabus (step-by-step vs open-ended)?\n"
-                    "You MUST output distinct scores. Do not just output 0.5 for everything. "
-                    "Output strict JSON with keys C_vis, C_prac, C_struct. Example: {\"C_vis\": 0.8, \"C_prac\": 0.9, \"C_struct\": 0.6}"
-                )),
+                SystemMessage(content="You are an expert in CS curriculum analysis. Rate this course on Visual, Practical, Structured (0-1). Ensure your ratings reflect the specific details of this course. Output strict JSON with keys C_vis, C_prac, C_struct."),
                 HumanMessage(content=f"Course: {course}\nContext: {context[:2000]}")
             ])
             chain = prompt | self.llm | StrOutputParser()
@@ -731,17 +773,12 @@ class BackgroundRAGPreparer:
             features["credit_hours"] = credit_hours
             return features
         except Exception:
-            return self._apply_semantic_fallback(course)
+            return {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5, "credit_hours":"3+0"}
 
     def _apply_semantic_fallback(self, course: str) -> Dict:
         try:
             prompt = ChatPromptTemplate.from_messages([
-                SystemMessage(content=(
-                    "You are an expert in CS curricula. Estimate Visual (C_vis), Practical (C_prac), and Structured (C_struct) scores (0.0 to 1.0) "
-                    "for this course based on its typical syllabus. You MUST provide distinct scores. "
-                    "For example: Computer Graphics -> C_vis: 0.9, C_prac: 0.7. Data Structures -> C_vis: 0.3, C_prac: 0.8. "
-                    "Output strict JSON with keys C_vis, C_prac, C_struct."
-                )),
+                SystemMessage(content="You are an expert in CS curricula. Estimate Visual, Practical, Structured scores for this course name. Be specific to this course's typical content. Output JSON with C_vis, C_prac, C_struct."),
                 HumanMessage(content=f"Course: {course}")
             ])
             chain = prompt | self.llm | StrOutputParser()
@@ -749,40 +786,21 @@ class BackgroundRAGPreparer:
             match = re.search(r'\{.*\}', res, re.DOTALL)
             if match:
                 features = json.loads(match.group())
-                if features.get("C_vis") != 0.5 or features.get("C_prac") != 0.5 or features.get("C_struct") != 0.5:
-                    features["C_vis"] = max(0.1, min(1.0, features.get("C_vis", 0.5)))
-                    features["C_prac"] = max(0.1, min(1.0, features.get("C_prac", 0.5)))
-                    features["C_struct"] = max(0.1, min(1.0, features.get("C_struct", 0.5)))
-                    return features
-        except Exception:
-            pass
-
-        course_lower = course.lower()
-        c_vis, c_prac, c_struct = 0.5, 0.5, 0.5
-        
-        if any(k in course_lower for k in ["graphics", "hci", "interaction", "vision", "game", "multimedia", "rendering", "image"]):
-            c_vis = 0.85
-        elif any(k in course_lower for k in ["database", "networks", "operating", "compiler", "architecture", "automata"]):
-            c_vis = 0.30
-            
-        if any(k in course_lower for k in ["lab", "programming", "practical", "project", "database", "networks", "software", "development", "web", "security"]):
-            c_prac = 0.80
-        elif any(k in course_lower for k in ["theory", "automata", "math", "calculus", "discrete", "architecture"]):
-            c_prac = 0.30
-            
-        if any(k in course_lower for k in ["theory", "automata", "architecture", "compiler", "security", "math", "calculus"]):
-            c_struct = 0.80
-        elif any(k in course_lower for k in ["project", "research", "capstone", "management", "hci"]):
-            c_struct = 0.30
-
-        features = {"C_vis": c_vis, "C_prac": c_prac, "C_struct": c_struct}
-
-        if any(k in course_lower for k in ["lab", "practical", "programming", "graphics", "networks", "compiler", "database", "web", "software", "game", "hci"]):
-            features["credit_hours"] = "3+1"
-        else:
-            features["credit_hours"] = "3+0"
-            
-        return features
+            else:
+                features = {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5}
+            features["C_vis"] = max(0.2, min(1.0, features.get("C_vis", 0.5)))
+            features["C_prac"] = max(0.1, min(1.0, features.get("C_prac", 0.5)))
+            features["C_struct"] = max(0.1, min(1.0, features.get("C_struct", 0.5)))
+            course_lower = course.lower()
+            lab_keywords = ["lab", "practical", "programming", "graphics", "networks", "compiler",
+                            "database", "web", "software", "game", "hci", "human computer", "interaction"]
+            if any(k in course_lower for k in lab_keywords):
+                features["credit_hours"] = "3+1"
+            else:
+                features["credit_hours"] = "3+0"
+            return features
+        except:
+            return {"C_vis":0.5, "C_prac":0.5, "C_struct":0.5, "credit_hours":"3+0"}
 
     def _ensure_distinct_features(self, features_dict: Dict[str, Dict]) -> Dict[str, Dict]:
         if len(features_dict) <= 1:
@@ -827,11 +845,11 @@ class BackgroundRAGPreparer:
                                 features["source_url"] = self._last_success_url if self._last_success_url else url
                                 self.course_features[c] = features
                                 continue
-                    else:
+                    else:  # html
                         scraped_text = self._scrape_course_page(url)
                         if scraped_text:
                             features = self._extract_features_from_context(c, scraped_text)
-                            features["source_url"] = f"Scraped from {url}"
+                            features["source_url"] = f"Scraped from {url}"  # <-- This is the prefix we need to clean later
                             self.course_features[c] = features
                             continue
                 pdf_url = self._search_course_outline(c, degree, country, university)
@@ -935,6 +953,10 @@ class FSLSMAgent:
 # SECTION 6.5: DOMINANT POLE HELPER
 
 def get_dominant_poles(profile: Dict) -> Dict[str, Tuple[str, float]]:
+    """
+    For each FSLSM dimension, return the dominant pole (higher score) and its score.
+    Returns a dict mapping the dimension key to (pole_name, score).
+    """
     dimensions = {
         "Input": ("Visual", profile["visual"], "Verbal", profile["verbal"]),
         "Perception": ("Sensing", profile["sensing"], "Intuitive", profile["intuitive"]),
@@ -957,8 +979,10 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
     G = nx.Graph()
     G.add_node(student_name, type="student")
     
+    # Get dominant poles
     dominant = get_dominant_poles(profile)
     
+    # Display labels for pole nodes (showing dominant pole)
     display_labels = {
         "Visual": f"{dominant['Input'][0]} ({dominant['Input'][1]:.2f})",
         "Sensing": f"{dominant['Perception'][0]} ({dominant['Perception'][1]:.2f})",
@@ -966,6 +990,7 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
         "Global": f"{dominant['Understanding'][0]} ({dominant['Understanding'][1]:.2f})"
     }
     
+    # Actual first-pole scores for edge calculations
     pole_scores = {
         "Visual": profile["visual"],
         "Sensing": profile["sensing"],
@@ -973,10 +998,12 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
         "Global": profile["global"]
     }
     
+    # Add pole nodes with display labels
     for pole, label in display_labels.items():
         G.add_node(pole, type="pole", score=pole_scores[pole], label=label)
         G.add_edge(student_name, pole, weight=pole_scores[pole], style="solid", color="gray")
     
+    # Course colors based on source type
     source_colors = {
         "regional": "#2ECC71",
         "international": "#3498DB",
@@ -991,16 +1018,20 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
         course_color_map[course_name] = color
         G.add_node(course_name, type="course", color=color)
         
+        # Connect every course to every pole with a match score (threshold lowered to 0.01)
         pole_to_feature = {"Visual": "C_vis", "Sensing": "C_prac", "Global": "C_struct"}
+        # Also add Active pole connection (use profile's active score and course's structure as proxy)
         for pole, feature_key in pole_to_feature.items():
             if feature_key in features:
                 match_score = profile.get(pole.lower(), 0.5) * features[feature_key]
-                if match_score > 0.01:
+                if match_score > 0.01:  # lowered threshold to show all connections
                     G.add_edge(pole, course_name, weight=match_score, style="dashed", color=color)
-        active_score = profile.get("active", 0.5) * 0.5
+        # Add Active pole connection (using average of other features or direct)
+        active_score = profile.get("active", 0.5) * 0.5  # placeholder
         if active_score > 0.01:
             G.add_edge("Active", course_name, weight=active_score, style="dashed", color=color)
     
+    # Positioning
     pos = {student_name: (0, 0)}
     pole_names = ["Visual", "Sensing", "Active", "Global"]
     num_poles = len(pole_names)
@@ -1031,6 +1062,7 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
             color = G[u][v].get("color", "black")
             nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=2.0, alpha=0.9, edge_color=color, style="dashed", ax=ax)
     
+    # Draw node labels with custom labels
     node_labels = {}
     for node in G.nodes:
         if node == student_name:
@@ -1041,18 +1073,21 @@ def visualize_multi_course_graph(profile, course_features, comparison_results, s
             node_labels[node] = node
     nx.draw_networkx_labels(G, pos, labels=node_labels, font_size=10, font_weight="bold", ax=ax)
     
+    # Edge labels
     edge_labels = {}
     for u, v in dashed_edges:
         weight = G[u][v].get("weight", 0)
-        if weight > 0.01:
+        if weight > 0.01:  # show even small weights
             edge_labels[(u, v)] = f"{weight:.2f}"
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8, label_pos=0.5, rotate=False, ax=ax)
     
+    # Add pole scores as text below each pole node
     for pole, score in pole_scores.items():
         x, y = pos[pole]
         ax.text(x, y - 0.18, f"{score:.2f}", fontsize=8, ha='center', va='center', color='black', fontweight='bold',
                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
     
+    # Legend
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', label='Student', markerfacecolor='#2E7D32', markersize=15),
         Line2D([0], [0], marker='o', color='w', label='FSLSM Poles', markerfacecolor='#5D6D7E', markersize=15),
@@ -1440,6 +1475,7 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
         else:
             pos[concepts_nodes[0]] = (best_x, -0.9 if pdf_mode else -1.0)
 
+    # Get dominant pole labels
     dominant = get_dominant_poles(profile)
     pole_display = {
         "Visual": f"{dominant['Input'][0]} ({dominant['Input'][1]:.2f})",
@@ -1478,6 +1514,7 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
                               node_color=colors["concept"], node_size=concept_sizes,
                               edgecolors=colors["concept_border"], linewidths=2, ax=ax)
 
+    # Draw edges
     edge_labels_dict = {}
     for u, v, d in G.edges(data=True):
         is_rec = d.get("is_recommended_path", False)
@@ -1506,6 +1543,7 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
                                                facecolor=colors["edge_label_bg"], alpha=0.8),
                                      ax=ax)
 
+    # Node labels
     node_labels = {}
     fontsize = 8 if pdf_mode else 9
     for node in G.nodes:
@@ -1562,16 +1600,17 @@ def visualize_comparative_cognitive_graph(cg, profile, comparison_results,
 # SECTION 10: CAUSAL ANALYSIS
 
 def get_comparative_analysis(profile, course_features, llm, student_country="Pakistan", student_university=None):
-    if not os.path.exists(DATASET_PATH):
-        st.error(f"Original dataset `{os.path.basename(DATASET_PATH)}` not found at {DATASET_PATH}.")
+    dataset_path = os.path.join(BASE_DIR, "CogNet_Advisory_Data.csv")
+    if not os.path.exists(dataset_path):
+        st.error(f"Original dataset `CogNet_Advisory_Data.csv` not found at {dataset_path}.")
         st.markdown("Please ensure the file is in the same directory as the script.")
         st.stop()
     
-    st.info(f"Using dataset `{os.path.basename(DATASET_PATH)}`.")
+    st.info("Using original dataset `CogNet_Advisory_Data.csv`.")
     
     try:
-        df = pd.read_csv(DATASET_PATH)
-        st.success(f"Loaded {len(df)} records from: {DATASET_PATH}")
+        df = pd.read_csv(dataset_path)
+        st.success(f"Loaded {len(df)} records from: {dataset_path}")
         
         df.rename(columns={
             'Visual': 'visual',
@@ -1636,7 +1675,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     X = df[['visual', 'sensing', 'active', 'global']].values
     T = df['C_vis'].values
     Y = df['final_grade'].values
-    W = df[['prior_gpa', 'C_prac', 'C_struct']].values 
+    W = df[['prior_gpa']].values
     
     dml = LinearDML(
         model_y=GradientBoostingRegressor(),
@@ -1654,24 +1693,33 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     cate = dml.effect(student_X)[0]
     
     st.write("### Debug: ITE Calculation")
-    st.write(f"CATE value (Base effect of C_vis): {cate:.6f}")
-    st.write(f"Average C_vis in dataset: {avg_vis:.3f}")
+    st.write(f"CATE value: {cate:.6f}")
+    st.write(f"Average C_vis: {avg_vis:.3f}")
     
     for course_name, features in course_features.items():
+        legacy_y = 0.5 + 0.3 * profile['visual'] * features.get('C_vis', 0.5) + \
+                        0.2 * profile['sensing'] * features.get('C_prac', 0.5) + \
+                        0.1 * profile['global'] * features.get('C_struct', 0.5)
+        legacy_baseline = 0.5 + 0.3 * profile['visual'] * avg_vis + \
+                                0.2 * profile['sensing'] * avg_prac + \
+                                0.1 * profile['global'] * avg_struct
+        legacy_ite = legacy_y - legacy_baseline
+        
         delta_vis = features.get('C_vis', 0.5) - avg_vis
         causal_ite = cate * delta_vis
         
         if abs(causal_ite) < 0.0005:
             causal_ite = 0.0
         
-        baseline_grade = df['final_grade'].mean()
-        predicted_grade = max(0, min(1, baseline_grade + causal_ite))
+        predicted_grade = legacy_y + causal_ite
+        predicted_grade = max(0, min(1, predicted_grade))
         
         source_url = features.get('source_url', 'Unknown')
         source_type, source_label = detect_course_source(source_url, student_country, student_university)
         
         results[course_name] = {
             'ite': causal_ite,
+            'legacy_ite': legacy_ite,
             'predicted_grade': predicted_grade,
             'credit_hours': features.get('credit_hours', 'Unknown'),
             'cate': cate,
@@ -1719,6 +1767,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     learning_resources = get_learning_resources(best_course)
     resources_text = "\n".join([f"- {platform}: {', '.join(courses)}" for platform, courses in learning_resources.items()])
 
+    # --- UPDATED: Improved explanation logic for equal/negative ITE ---
     equal_ite_note = ""
     if all_equal:
         equal_ite_note = (
@@ -1726,6 +1775,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
             f"This indicates that the causal benefit is comparable across courses. "
             f"The recommendation is therefore based on the best learning style match and course content alignment."
         )
+    # If best_ite is negative, add a note to explain the meaning
     negative_ite_note = ""
     if best_ite < 0:
         negative_ite_note = (
@@ -1733,6 +1783,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
             f"However, among the available options, this course has the **least negative** impact and aligns best with your learning style. "
             f"The recommendation prioritizes the most suitable match for your profile."
         )
+    # If best_ite is zero, mention neutrality
     zero_ite_note = ""
     if abs(best_ite) < 0.0005:
         zero_ite_note = (
@@ -1740,6 +1791,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
             f"The recommendation is driven by the optimal alignment with your learning style and content preferences."
         )
     
+    # Combine notes - only one of them will be non-empty, but we can combine if needed
     explanation_note = equal_ite_note or negative_ite_note or zero_ite_note
     
     try:
@@ -1775,7 +1827,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
                 f"Student Profile: Visual={profile['visual']:.2f}, Sensing={profile['sensing']:.2f}, "
                 f"Global={profile['global']:.2f}, Active={profile['active']:.2f}.\n\n"
                 f"All Course Results: {json.dumps(results, indent=2)}\n\n"
-                f"Best course: {best_course} (Causal ITE = {best_ite:.3f}, "
+                f"Best course: {best_course} (Causal ITE = {best_ite:.3f}, Legacy ITE = {results[best_course]['legacy_ite']:.3f}, "
                 f"Credits: {best_credit}, Nature: {best_nature}, Lab: {best_lab})\n\n"
                 f"Course Source: {best_source_label}\n"
                 f"Content Comparison: {json.dumps(content_comp)}\n"
@@ -1809,8 +1861,7 @@ def run_cross_validation_with_baselines(df, n_splits=5):
     X = df[feature_cols].values
     y = df['final_grade'].values
     
-    groups = df['Student_ID'].fillna('unknown').values
-    kf = GroupKFold(n_splits=n_splits)
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
     
     results = {
         'Linear Regression': {'rmse': [], 'mae': [], 'r2': []},
@@ -1820,7 +1871,7 @@ def run_cross_validation_with_baselines(df, n_splits=5):
     
     dml_errors = []
     
-    for fold, (train_idx, test_idx) in enumerate(kf.split(X, y, groups=groups)):
+    for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
         
@@ -1842,7 +1893,7 @@ def run_cross_validation_with_baselines(df, n_splits=5):
             X_train_dml = df.iloc[train_idx][['visual', 'sensing', 'active', 'global']].values
             T_train = df.iloc[train_idx]['C_vis'].values
             Y_train = df.iloc[train_idx]['final_grade'].values
-            W_train = df.iloc[train_idx][['prior_gpa', 'C_prac', 'C_struct']].values
+            W_train = df.iloc[train_idx][['prior_gpa']].values
             
             if np.std(T_train) < 1e-6:
                 raise ValueError(f"Fold {fold}: C_vis is constant (std={np.std(T_train):.2e})")
@@ -1903,6 +1954,7 @@ def run_cross_validation_with_baselines(df, n_splits=5):
 # SECTION 12: PDF REPORT GENERATOR
 
 def clean_source_url(url: str) -> str:
+    """Remove common prefixes like 'Scraped from ' from the source URL."""
     prefixes = ["Scraped from ", "Scraped from: ", "Scraped from - ", "Scraped from "]
     for prefix in prefixes:
         if url.startswith(prefix):
@@ -1914,10 +1966,11 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
                         courses, course_features, logo_path=None):
     buffer = BytesIO()
     with PdfPages(buffer) as pdf:
-        # Page 1
+        # Page 1: Summary tables (unchanged)
         fig1, ax1 = plt.subplots(figsize=(8.5, 11))
         ax1.axis('off')
         
+        # Logo
         logo_placed = False
         if logo_path and os.path.exists(logo_path):
             try:
@@ -1938,6 +1991,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
                  fontsize=12, ha='left', va='top', transform=ax1.transAxes)
         ax1.text(0.05, y_start - 0.08, "="*70, fontsize=10, ha='left', va='top', transform=ax1.transAxes)
 
+        # Student Info
         info_y = y_start - 0.15
         info_lines = [
             f"Student: {student_name}",
@@ -1950,6 +2004,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             ax1.text(0.05, info_y - i*0.04, line, fontsize=11, ha='left', va='top',
                      transform=ax1.transAxes)
 
+        # Helper to draw a table with a title above (unchanged)
         def draw_table(ax, y, title, headers, data, col_widths, 
                        title_fontsize=12, header_fontsize=9, data_fontsize=9,
                        bbox_width=0.9, title_colour='#d3d3d3', 
@@ -1977,6 +2032,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
                     table[(row, col)].set_text_props(ha='left')
             return table_y - 0.16
 
+        # Learning Style Profile
         y_pos = info_y - len(info_lines)*0.04 - 0.08
         profile_headers = ["Learning Style", "Score"]
         profile_data = [
@@ -2010,6 +2066,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
                 table[(row, col)].set_text_props(ha='left')
         y_pos = table_y - 0.34
 
+        # Recommended Course
         details = comparison_results[cg.best_course]
         source_label = details.get('source_label', '')
         ite_val = details.get('ite', 0.0)
@@ -2029,6 +2086,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         y_pos = draw_table(ax1, y_pos, "RECOMMENDED COURSE", rec_headers, rec_data,
                            col_widths=[0.5, 0.5], bbox_width=0.9)
 
+        # Learning Style Match
         dominant = get_dominant_poles(profile)
         match_headers = ["Learning Pole", "Your Score", "Course Feature", "Match Strength"]
         match_data = []
@@ -2048,36 +2106,39 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         y_pos = draw_table(ax1, y_pos, "LEARNING STYLE MATCH", match_headers, match_data,
                            col_widths=[0.25, 0.25, 0.25, 0.25], bbox_width=0.9, data_fontsize=8)
 
-        ite_headers = ["Course", "Causal ITE", "Grade"]
+        # Comparative ITE Results
+        ite_headers = ["Course", "Causal ITE", "Legacy ITE", "Grade"]
         ite_data = []
         for course, data in comparison_results.items():
             marker = "*" if course == cg.best_course else " "
             ite_val = data.get('ite', 0.0)
             if abs(ite_val) < 0.0005:
                 ite_val = 0.0
+            legacy_val = data.get('legacy_ite', 0.0)
             grade_val = data.get('predicted_grade', 0.0)
-            ite_data.append([f"{marker} {course}", f"{ite_val:+.3f}", f"{grade_val:.3f}"])
+            ite_data.append([f"{marker} {course}", f"{ite_val:+.3f}", f"{legacy_val:+.3f}", f"{grade_val:.3f}"])
         y_pos = draw_table(ax1, y_pos, "COMPARATIVE ITE RESULTS", ite_headers, ite_data,
-                           col_widths=[0.4, 0.3, 0.3], bbox_width=0.9, data_fontsize=8)
+                           col_widths=[0.3, 0.2, 0.25, 0.25], bbox_width=0.9, data_fontsize=8)
 
+        # Scraped Sources - FIXED: ensure correct data
         src_headers = ["Course", "Source URL", "Source Type", "PDF Status"]
         src_data = []
         for course, data in comparison_results.items():
             src_url = data.get('source_url', 'Unknown')
-            src_url_clean = clean_source_url(str(src_url))
+            # Clean the source URL to remove "Scraped from " prefix
+            src_url_clean = clean_source_url(src_url)
             src_type = data.get('source_label', 'Unknown')
-            
-            if src_url and 'http' in str(src_url) and 'Semantic' not in src_type:
+            # Determine PDF status based on source URL
+            if src_url and 'http' in src_url and 'Semantic' not in src_type:
                 pdf_status = "Cached PDF"
             else:
                 pdf_status = "Not available"
-                
-            display_url = src_url_clean if len(src_url_clean) < 50 else src_url_clean[:47] + "..."
+            display_url = src_url_clean if len(src_url_clean) < 60 else src_url_clean[:57] + "..."
             src_data.append([course, display_url, src_type, pdf_status])
-            
         y_pos = draw_table(ax1, y_pos, "SCRAPED SOURCES", src_headers, src_data,
                            col_widths=[0.2, 0.4, 0.2, 0.2], bbox_width=0.9, data_fontsize=7)
 
+        # Resource tables
         resources_urls = get_learning_resources_with_urls(cg.best_course)
         if resources_urls:
             flat_resources = []
@@ -2099,27 +2160,25 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         pdf.savefig(fig1, dpi=150, bbox_inches='tight')
         plt.close(fig1)
 
-        # Page 2
+        # Page 2: Multi-course graph
         simple_fig.tight_layout()
         plt.figtext(0.5, 0.01, "Page 2 of 5", ha='center', fontsize=9)
         pdf.savefig(simple_fig, dpi=150, bbox_inches='tight')
         plt.close(simple_fig)
 
-        # Page 3 (Fixed memory bug)
+        # Page 3: Comprehensive graph
         comp_fig = visualize_comparative_cognitive_graph(
             cg, profile, comparison_results,
             title=f"Comprehensive Cognitive Graph: {student_name} -> Context -> Courses -> Concepts",
             save_files=False,
             pdf_mode=True
         )
-        # Force layout update before saving
         comp_fig.tight_layout()
         plt.figtext(0.5, 0.01, "Page 3 of 5", ha='center', fontsize=9)
-        # Save and forcefully destroy the figure to prevent memory leaks/corruption
         pdf.savefig(comp_fig, dpi=150, bbox_inches='tight')
-        plt.close('all') 
+        plt.close(comp_fig)
 
-        # Page 4
+        # Page 4: Reasoning Trace
         fig4, ax4 = plt.subplots(figsize=(8.5, 11))
         ax4.axis('off')
         trace = "\n".join(cg.reasoning_trace)
@@ -2129,45 +2188,50 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         pdf.savefig(fig4, dpi=150, bbox_inches='tight')
         plt.close(fig4)
 
-        # Page 5
+        #Page 5: MASTER CAUSAL EXPLANATION & COMPARATIVE TABLE
         fig5, ax5 = plt.subplots(figsize=(8.5, 11))
         ax5.axis('off')
 
+        # Title
         ax5.text(0.05, 0.95, "MASTER CAUSAL EXPLANATION & COMPARATIVE RESULTS", 
                  fontsize=14, fontweight='bold', ha='left', va='top', transform=ax5.transAxes)
 
+        # Causal Explanation
         ax5.text(0.05, 0.88, explanation, fontsize=10, ha='left', va='top', 
                  transform=ax5.transAxes, wrap=True)
 
+        # Comparative Table (repeated)
         y_table = 0.55
         ax5.text(0.5, y_table, "COMPARATIVE ITE RESULTS", fontsize=12, fontweight='bold',
                  ha='center', va='top', transform=ax5.transAxes)
         table_y = y_table - 0.04
-        headers = ["Course", "Causal ITE", "Grade"]
+        headers = ["Course", "Causal ITE", "Legacy ITE", "Grade"]
         data = []
         for course, data_dict in comparison_results.items():
             marker = "*" if course == cg.best_course else " "
             ite_val = data_dict.get('ite', 0.0)
             if abs(ite_val) < 0.0005:
                 ite_val = 0.0
+            legacy_val = data_dict.get('legacy_ite', 0.0)
             grade_val = data_dict.get('predicted_grade', 0.0)
-            data.append([f"{marker} {course}", f"{ite_val:+.3f}", f"{grade_val:.3f}"])
+            data.append([f"{marker} {course}", f"{ite_val:+.3f}", f"{legacy_val:+.3f}", f"{grade_val:.3f}"])
 
         cell_text = [headers] + data
         table = ax5.table(cellText=cell_text,
                           loc='center',
                           bbox=[0.05, table_y - 0.28, 0.9, 0.30],
-                          cellColours=[['#d3d3d3']*3] + [['white']*3 for _ in range(len(data))],
-                          colWidths=[0.4, 0.3, 0.3])
+                          cellColours=[['#d3d3d3']*4] + [['white']*4 for _ in range(len(data))],
+                          colWidths=[0.3, 0.2, 0.25, 0.25])
         table.auto_set_font_size(False)
         table.set_fontsize(9)
         table.scale(1, 1.5)
-        for col in range(3):
+        for col in range(4):
             table[(0, col)].set_text_props(fontweight='bold', ha='center')
         for row in range(1, len(cell_text)):
-            for col in range(3):
+            for col in range(4):
                 table[(row, col)].set_text_props(ha='left')
 
+        # Note about best course
         ax5.text(0.05, 0.12, f"* Recommended course: {cg.best_course} with Causal ITE = {comparison_results[cg.best_course]['ite']:.3f}",
                  fontsize=10, ha='left', va='top', transform=ax5.transAxes)
 
@@ -2179,7 +2243,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
     return buffer
 
 
-# SECTION 13: STREAMLIT MAIN APPLICATION
+# SECTION 13: STREAMLIT MAIN APPLICATION (MODIFIED QUESTION LAYOUT)
 
 def main():
     st.set_page_config(page_title="CogNet Advisor", layout="wide")
@@ -2194,9 +2258,24 @@ def main():
         st.markdown("*Cognitive Graph-Based Personalized Course Recommendation System using FSLSM*")
 
     with st.sidebar:
-        st.header("Configuration")
-        st.success(f"✅ API Key Fetched")
-        st.info(f"Model: {LLM_MODEL_NAME}")
+        st.header("API Key")
+        saved_key = load_api_key()
+        if saved_key:
+            st.success("API key loaded from local storage.")
+            if st.button("Clear saved API key"):
+                clear_api_key()
+                st.rerun()
+            api_key = saved_key
+        else:
+            api_key = st.text_input("OpenAI API Key", type="password")
+            remember = st.checkbox("Remember my API key (saved locally)")
+            if api_key and remember:
+                save_api_key(api_key)
+                st.success("Key saved for future sessions.")
+        if not api_key:
+            st.warning("Please enter your OpenAI API key.")
+            st.stop()
+        os.environ["OPENAI_API_KEY"] = api_key
 
         st.header("Student Profile")
         name = st.text_input("Name", "Student")
@@ -2217,8 +2296,7 @@ def main():
         if st.button("Start Assessment", type="primary"):
             st.session_state["start_assessment"] = True
 
-    # Use the Hardcoded Model and API Key
-    llm = ChatOpenAI(model=LLM_MODEL_NAME, temperature=LLM_TEMPERATURE)
+    llm = ChatOpenAI(model="gpt-6-luna", temperature=0.2)
     embeddings = OpenAIEmbeddings()
 
     if "start_assessment" not in st.session_state:
@@ -2246,24 +2324,30 @@ def main():
     if "pdf_buffer" not in st.session_state:
         st.session_state.pdf_buffer = None
 
+    # --- MODIFIED: All questions on one page ---
     if st.session_state.start_assessment and st.session_state.profile is None:
         st.subheader("FSLSM Questionnaire")
         st.markdown("Please answer all 44 questions below. Choose the option that best fits you.")
         answers = {}
+        # Use a form to capture all answers at once
         with st.form(key="fslsm_form"):
             for idx, (q_text, dim, pole) in enumerate(FSLSM_QUESTIONS):
                 opt_a, opt_b = extract_options(q_text)
                 clean_q = re.sub(r'\s*\(a\)\s*.*?\s*\(b\)\s*.*', '', q_text).strip()
+                # Use radio buttons
                 choice = st.radio(
                     f"Q{idx+1}: {clean_q}",
                     [f"(a) {opt_a}", f"(b) {opt_b}"],
                     key=f"q_{idx}",
                     index=None
                 )
+                # Store selected value
                 answers[idx] = choice
+            # Submit button
             submitted = st.form_submit_button("Submit All Answers")
         
         if submitted:
+            # Process answers
             all_answered = True
             for idx in range(len(FSLSM_QUESTIONS)):
                 if answers.get(idx) is None:
@@ -2272,6 +2356,7 @@ def main():
             if not all_answered:
                 st.warning("Please answer all questions before submitting.")
             else:
+                # Compute delta for each question
                 for idx, (q_text, dim, pole) in enumerate(FSLSM_QUESTIONS):
                     choice = answers[idx]
                     selected = "a" if choice.startswith("(a)") else "b"
@@ -2285,6 +2370,7 @@ def main():
                     st.session_state.analysis_started = True
                     st.rerun()
     else:
+        # Existing result display (unchanged)
         if st.session_state.profile is not None and st.session_state.best_course is not None:
             st.header("Results")
             col1, col2, col3 = st.columns(3)
@@ -2315,7 +2401,8 @@ def main():
                 causal_ite = data.get('ite', 0.0)
                 if abs(causal_ite) < 0.0005:
                     causal_ite = 0.0
-                st.write(f"**{course}**: Causal ITE = {causal_ite:+.3f}, Grade = {data['predicted_grade']:.3f}  -  Source: {src_clean}  -  {source_label}  -  PDF: {pdf_status}")
+                legacy_ite = data.get('legacy_ite', 0.0)
+                st.write(f"**{course}**: Causal ITE = {causal_ite:+.3f} (Legacy: {legacy_ite:+.3f}), Grade = {data['predicted_grade']:.3f}  -  Source: {src_clean}  -  {source_label}  -  PDF: {pdf_status}")
 
             st.subheader("Master Causal Explanation")
             st.write(st.session_state.explanation)
@@ -2329,9 +2416,10 @@ def main():
             st.markdown("*Comparing your Double ML against standard ML baselines on the same dataset.*")
             
             with st.spinner("Running cross-validation..."):
-                if os.path.exists(DATASET_PATH):
+                dataset_path = os.path.join(BASE_DIR, "CogNet_Advisory_Data.csv")
+                if os.path.exists(dataset_path):
                     try:
-                        df_cv = pd.read_csv(DATASET_PATH)
+                        df_cv = pd.read_csv(dataset_path)
                         df_cv.rename(columns={
                             'Visual': 'visual',
                             'Sensing': 'sensing',
@@ -2360,6 +2448,7 @@ def main():
                                 best_idx = np.argmin(rmse_values)
                                 best_method = methods[best_idx]
                                 
+                                # Dynamically explain the result depending on which model wins
                                 if best_method == "Double ML":
                                     st.success(f"Best performing method: Double ML has the lowest RMSE, validating the causal approach.")
                                 else:
@@ -2369,7 +2458,7 @@ def main():
                     except Exception as e:
                         st.warning(f"Error loading dataset for cross-validation: {e}")
                 else:
-                    st.warning(f"Original dataset not found at `{DATASET_PATH}` for cross-validation. Please ensure the file exists.")
+                    st.warning("Original dataset `CogNet_Advisory_Data.csv` not found for cross-validation. Please ensure the file exists.")
 
             if st.session_state.simple_fig is not None:
                 st.subheader("Multi-Course Cognitive Overlay")

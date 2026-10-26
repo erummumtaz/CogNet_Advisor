@@ -1511,34 +1511,47 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     resources = get_learning_resources(best_course)
     res_text = "\n".join(f"- {p}: {', '.join(c)}" for p, c in resources.items())
 
+    # FIX: Calculate percentages for the explanation
+    best_ite_pct = best_ite * 100
+    min_ite_pct = min(ite_vals) * 100
+    max_ite_pct = max(ite_vals) * 100
+    cate_lo_pct = cate_lo * 100
+    cate_hi_pct = cate_hi * 100
+
     note = ""
     if all_near_zero:
-        note = (f"All causal ITE estimates are very close to zero (range "
-                f"[{min(ite_vals):+.4f}, {max(ite_vals):+.4f}], 95% CI for CATE = "
-                f"[{cate_lo:+.4f}, {cate_hi:+.4f}]). After controlling for prior GPA and "
+        note = (f"All predicted grade impacts are very close to zero (range "
+                f"[{min_ite_pct:+.2f}%, {max_ite_pct:+.2f}%], 95% CI for CATE = "
+                f"[{cate_lo_pct:+.2f}%, {cate_hi_pct:+.2f}%]). After controlling for prior GPA and "
                 f"FSLSM dimensions, visual content of the available courses has minimal "
-                f"causal impact on final grades. The recommendation is therefore driven primarily "
+                f"impact on final grades. The recommendation is therefore driven primarily "
                 f"by alignment between your FSLSM profile and each course's pedagogical features.")
     elif all_eq:
-        note = (f"All courses have very similar Causal ITE values (≈ {ite_vals[0]:+.4f}). "
+        note = (f"All courses have very similar predicted grade impacts (≈ {ite_vals[0]:+.4f} or {ite_vals[0]*100:+.2f}%). "
                 f"Causal benefit is comparable; recommendation is based on best learning-style "
                 f"match and content alignment.")
     elif best_ite < 0:
-        note = (f"Causal ITE is negative ({best_ite:+.4f}), suggesting a modest predicted decrease "
-                f"in grade relative to the average course. However, this is the least negative "
-                f"option and aligns best with your learning style.")
+        note = (f"The predicted grade impact is slightly negative ({best_ite:+.4f}, translating to "
+                f"{best_ite_pct:+.2f}%). This means the predicted grade impact is a minor "
+                f"decrease, primarily because the course's visual content is below the dataset average, "
+                f"even though the underlying trend (CATE) is positive ({cate:+.4f}). The 95% CI "
+                f"[{cate_lo_pct:+.2f}%, {cate_hi_pct:+.2f}%] includes zero, meaning the effect is "
+                f"statistically indistinguishable from no effect. This course is still the least "
+                f"negative option and aligns best with your learning style.")
     elif abs(best_ite) < 0.005:
-        note = (f"Causal ITE is approximately zero ({best_ite:+.4f}), indicating neutral expected "
-                f"impact. Recommendation is driven by optimal learning-style alignment.")
+        note = (f"Predicted grade impact is approximately zero ({best_ite:+.4f} or {best_ite_pct:+.2f}%), "
+                f"indicating neutral expected impact. Recommendation is driven by optimal "
+                f"learning-style alignment.")
     else:
-        note = f"Causal ITE is positive ({best_ite:+.4f}), suggesting a modest expected improvement."
+        note = (f"Predicted grade impact is positive ({best_ite:+.4f} or {best_ite_pct:+.2f}%), "
+                f"suggesting a modest expected grade improvement.")
 
     try:
         cp = ChatPromptTemplate.from_messages([
             SystemMessage(content=(
                 f"You are a learning analytics advisor. Causal analysis ({dml_model_name}, "
                 f"adjusting for prior GPA) determined best course '{best_course}' "
-                f"with Causal ITE = {best_ite:+.4f}.\n\n"
+                f"with Causal ITE = {best_ite:+.4f} (which is {best_ite_pct:+.2f}% in final grade).\n\n"
                 f"Model diagnostics: R-Score = "
                 f"{f'{rscore_val:.4f}' if rscore_val is not None else 'N/A'}, "
                 f"CATE = {cate:+.4f} (95% CI: [{cate_lo:+.4f}, {cate_hi:+.4f}]).\n\n"
@@ -1548,21 +1561,24 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
                 f"Content comparison: {json.dumps(comp)}\n"
                 f"Resources: {res_text}\n\n"
                 f"IMPORTANT NOTE:\n{note}\n\n"
-                f"Write a concise but comprehensive explanation (4-6 sentences) covering: "
-                f"why '{best_course}' is optimal (interpret ITE honestly), fit to learning style, "
-                f"source type and content comparison, supplementary platforms, confounders "
-                f"(prior GPA), and be transparent if ITE is near-zero. Use numbers."
+                f"Write a clear, layman-friendly explanation (4-6 sentences). Assume the student "
+                f"does not know statistical jargon. Instead of saying 'ITE' or 'CATE', use "
+                f"'predicted grade impact'. Explain that a value like {best_ite_pct:+.2f}% means a "
+                f"very tiny (practically zero) change in their expected grade. Emphasize that the "
+                f"recommendation is based mainly on how well the course fits their learning style "
+                f"(Visual, Sensing, etc.), not just the grade impact. Be encouraging and transparent. "
+                f"Do not use formatting like asterisks or markdown."
             )),
             HumanMessage(content=f"Student: {profile_text}\n"
                                 f"Results: {json.dumps({k: {kk: vv for kk, vv in v.items() if kk != 'cate_ci'} for k, v in results.items()}, indent=2)}\n"
-                                f"Best: {best_course} (ITE={best_ite:+.4f}, Grade={results[best_course]['predicted_grade']:.3f})\n"
+                                f"Best: {best_course} (ITE={best_ite:+.4f} or {best_ite_pct:+.2f}%, Grade={results[best_course]['predicted_grade']:.3f})\n"
                                 f"Note: {note}")
         ])
         final_exp = safe_llm_call(cp | llm | StrOutputParser(), {})
     except Exception:
         final_exp = (f"Based on causal analysis ({dml_model_name}), **{best_course}** is recommended "
-                     f"(Causal ITE = {best_ite:+.4f}). {note} Course is {best_nat} and {best_lab}, "
-                     f"fitting your profile ({profile_text}). Supplementary: "
+                     f"(Predicted Grade Impact = {best_ite:+.4f} or {best_ite_pct:+.2f}%). {note} Course is {best_nat} "
+                     f"and {best_lab}, fitting your profile ({profile_text}). Supplementary: "
                      f"{', '.join(resources.keys())}.")
 
     return best_course, results, final_exp, df
@@ -1677,6 +1693,11 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             t[(0, c)].set_text_props(fontweight='bold', ha='center')
         return ty - table_h - 0.05
 
+    def truncate_middle(s, length=50):
+        if len(s) <= length:
+            return s
+        return s[:length//2] + "..." + s[-length//2:]
+
     with PdfPages(buffer) as pdf:
         # ---------------- PAGE 1: Header + Profile + Recommendation ----------------
         fig, ax = new_page()
@@ -1715,8 +1736,9 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         d = comparison_results[cg.best_course]
         iv = d.get('ite', 0.0)
         if abs(iv) < 1e-6: iv = 0.0
+        iv_pct = iv * 100
         rec = [["Course", cg.best_course],
-               ["Causal ITE", f"{iv:+.4f}"],
+               ["Predicted Grade Impact", f"{iv:+.4f} ({iv_pct:+.2f}%)"], # FIX: Clarified terminology
                ["Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"],
                ["Credit Hours", d.get('credit_hours', 'Unknown')],
                ["Source", d.get('source_label', '')]]
@@ -1755,12 +1777,14 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             m = "*" if c == cg.best_course else " "
             v = dd.get('ite', 0.0)
             if abs(v) < 1e-6: v = 0.0
-            ite_data.append([f"{m} {c}", f"{v:+.4f}",
+            v_pct = v * 100
+            ite_data.append([f"{m} {c}", f"{v:+.4f}", f"{v_pct:+.2f}%",
                              f"{dd.get('legacy_ite', 0):+.3f}",
                              f"{dd.get('predicted_grade', 0):.3f}"])
+        # FIX: Added an ITE (%) column
         draw_table(ax, yp, "COMPARATIVE ITE RESULTS",
-                   ["Course", "Causal ITE", "Legacy ITE", "Grade"],
-                   ite_data, [0.35, 0.20, 0.22, 0.23])
+                   ["Course", "Predicted Impact", "Impact (%)", "Legacy ITE", "Grade"],
+                   ite_data, [0.30, 0.18, 0.15, 0.18, 0.19])
         footer(fig, 2)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -1774,7 +1798,8 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             raw = dd.get('source_url', '')
             url = clean_source_url(raw)
             if url and url.lower().startswith('http'):
-                url_disp = textwrap.fill(url, width=40)
+                # FIX: Truncate middle instead of textwrap.fill
+                url_disp = truncate_middle(url, length=50)
                 pdf_status = "Cached PDF"
             else:
                 url_disp = "(semantic fallback — no URL)"
@@ -1784,18 +1809,21 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         yp = draw_table(ax, yp, "SCRAPED SOURCES",
                         ["Course", "Source URL", "Source Type", "PDF Status"],
                         sd, [0.22, 0.38, 0.22, 0.18])
+        
         ax.text(0.5, yp, "SUGGESTED LEARNING RESOURCES",
                 fontsize=12, fontweight='bold', ha='center', va='top', transform=ax.transAxes)
         yp -= 0.05
+        
         resources_urls = get_learning_resources_with_urls(cg.best_course)
         for plat, courses_list in resources_urls.items():
             ax.text(0.06, yp, f"▸ {plat}", fontsize=9, fontweight='bold',
                     ha='left', va='top', transform=ax.transAxes, color='#1565C0')
-            yp -= 0.028
+            yp -= 0.025
+            
             for cn, _ in courses_list:
                 ax.text(0.10, yp, f"• {cn}", fontsize=8, ha='left', va='top',
                         transform=ax.transAxes)
-                yp -= 0.024
+                yp -= 0.022
             yp -= 0.010
         footer(fig, 3)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
@@ -1845,9 +1873,12 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         fig, ax = new_page()
         ax.text(0.05, 0.95, "MASTER CAUSAL EXPLANATION",
                 fontsize=14, fontweight='bold', ha='left', va='top', transform=ax.transAxes)
-        wrapped_expl = "\n".join(textwrap.wrap(explanation, width=95))
-        ax.text(0.05, 0.88, wrapped_expl, fontsize=10, ha='left', va='top',
-                transform=ax.transAxes)
+        
+        # FIX: Centered text block to simulate justification
+        wrapped_expl = "\n".join(textwrap.wrap(explanation, width=85))
+        ax.text(0.5, 0.85, wrapped_expl, fontsize=11, ha='center', va='top',
+                multialignment='center', transform=ax.transAxes, linespacing=1.5)
+                
         footer(fig, 7)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
         plt.close(fig)

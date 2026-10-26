@@ -1459,23 +1459,33 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     results = {}
     best_course, best_ite = None, -np.inf
     for cname, feats in course_features.items():
+        # Base Grade Calculation
         legacy_y = (0.5 + 0.3 * profile['visual'] * feats.get('C_vis', 0.5)
                     + 0.2 * profile['sensing'] * feats.get('C_prac', 0.5)
                     + 0.1 * profile['global'] * feats.get('C_struct', 0.5))
+        
         legacy_baseline = (0.5 + 0.3 * profile['visual'] * avg_vis
                            + 0.2 * profile['sensing'] * avg_prac
                            + 0.1 * profile['global'] * avg_struct)
         legacy_ite = legacy_y - legacy_baseline
+        
+        # ITE (Impact) Calculation
         delta_vis = feats.get('C_vis', 0.5) - avg_vis
         causal_ite = cate * delta_vis
         if abs(causal_ite) < 1e-6:
             causal_ite = 0.0
+        
+        # Final Grade
         predicted_grade = max(0, min(1, legacy_y + causal_ite))
+        
         src_url = feats.get('source_url', 'Unknown')
         src_type, src_label = detect_course_source(src_url, student_country, student_university)
+        
         results[cname] = {
             'ite': causal_ite, 'cate': cate, 'cate_ci': (cate_lo, cate_hi),
             'legacy_ite': legacy_ite, 'predicted_grade': predicted_grade,
+            'base_grade': legacy_y, 'C_vis': feats.get('C_vis', 0.5),
+            'C_prac': feats.get('C_prac', 0.5), 'C_struct': feats.get('C_struct', 0.5),
             'credit_hours': feats.get('credit_hours', 'Unknown'),
             'source_type': src_type, 'source_label': src_label,
             'source_url': src_url, 'rscore': rscore_val,
@@ -1511,12 +1521,23 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     resources = get_learning_resources(best_course)
     res_text = "\n".join(f"- {p}: {', '.join(c)}" for p, c in resources.items())
 
-    # FIX: Calculate percentages for the explanation
+    # Calculate percentages and explicitly build the math string
     best_ite_pct = best_ite * 100
     min_ite_pct = min(ite_vals) * 100
     max_ite_pct = max(ite_vals) * 100
     cate_lo_pct = cate_lo * 100
     cate_hi_pct = cate_hi * 100
+    
+    base_grade_val = results[best_course]['base_grade']
+    pred_grade_val = results[best_course]['predicted_grade']
+
+    math_breakdown = (
+        f"1. Base Grade = 0.5 + (0.3 * Your Visual ({profile['visual']:.2f}) * Course Visual ({best_feats.get('C_vis', 0.5):.2f})) "
+        f"+ (0.2 * Your Sensing ({profile['sensing']:.2f}) * Course Practical ({best_feats.get('C_prac', 0.5):.2f})) "
+        f"+ (0.1 * Your Global ({profile['global']:.2f}) * Course Structured ({best_feats.get('C_struct', 0.5):.2f})) = {base_grade_val:.3f}.\n"
+        f"2. Predicted Impact (ITE) = CATE ({cate:+.4f}) * (Course Visual ({best_feats.get('C_vis', 0.5):.2f}) - Dataset Avg Visual ({avg_vis:.2f})) = {best_ite:+.4f} ({best_ite_pct:+.2f}%).\n"
+        f"3. Final Predicted Grade = Base Grade ({base_grade_val:.3f}) + Impact ({best_ite:+.4f}) = {pred_grade_val:.3f}."
+    )
 
     note = ""
     if all_near_zero:
@@ -1561,25 +1582,27 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
                 f"Content comparison: {json.dumps(comp)}\n"
                 f"Resources: {res_text}\n\n"
                 f"IMPORTANT NOTE:\n{note}\n\n"
-                f"Write a clear, layman-friendly explanation (4-6 sentences). Assume the student "
+                f"MATH BREAKDOWN:\n{math_breakdown}\n\n"
+                f"Write a clear, layman-friendly explanation (5-7 sentences). Assume the student "
                 f"does not know statistical jargon. Instead of saying 'ITE' or 'CATE', use "
-                f"'predicted grade impact'. Explain that a value like {best_ite_pct:+.2f}% means a "
-                f"very tiny (practically zero) change in their expected grade. Emphasize that the "
-                f"recommendation is based mainly on how well the course fits their learning style "
-                f"(Visual, Sensing, etc.), not just the grade impact. Be encouraging and transparent. "
-                f"Do not use formatting like asterisks or markdown."
+                f"'predicted grade impact'. You MUST explicitly include the MATH BREAKDOWN provided above "
+                f"in your response so the student sees exactly how their grade was calculated. "
+                f"Explain that a value like {best_ite_pct:+.2f}% means a very tiny (practically zero) "
+                f"change in their expected grade. Emphasize that the recommendation is based mainly on "
+                f"how well the course fits their learning style (Visual, Sensing, etc.), not just the grade impact. "
+                f"Be encouraging and transparent. Do not use formatting like asterisks or markdown."
             )),
             HumanMessage(content=f"Student: {profile_text}\n"
                                 f"Results: {json.dumps({k: {kk: vv for kk, vv in v.items() if kk != 'cate_ci'} for k, v in results.items()}, indent=2)}\n"
                                 f"Best: {best_course} (ITE={best_ite:+.4f} or {best_ite_pct:+.2f}%, Grade={results[best_course]['predicted_grade']:.3f})\n"
-                                f"Note: {note}")
+                                f"Note: {note}\nMath Breakdown: {math_breakdown}")
         ])
         final_exp = safe_llm_call(cp | llm | StrOutputParser(), {})
     except Exception:
         final_exp = (f"Based on causal analysis ({dml_model_name}), **{best_course}** is recommended "
                      f"(Predicted Grade Impact = {best_ite:+.4f} or {best_ite_pct:+.2f}%). {note} Course is {best_nat} "
-                     f"and {best_lab}, fitting your profile ({profile_text}). Supplementary: "
-                     f"{', '.join(resources.keys())}.")
+                     f"and {best_lab}, fitting your profile ({profile_text}). {math_breakdown} "
+                     f"Supplementary: {', '.join(resources.keys())}.")
 
     return best_course, results, final_exp, df
 
@@ -1698,8 +1721,31 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             return s
         return s[:length//2] + "..." + s[-length//2:]
 
+    def justify_text(text, width=85):
+        lines = textwrap.wrap(text, width=width)
+        justified_lines = []
+        for i, line in enumerate(lines):
+            if i == len(lines) - 1:
+                justified_lines.append(line)
+                continue
+            words = line.split()
+            if len(words) <= 1:
+                justified_lines.append(line)
+                continue
+            total_chars = sum(len(w) for w in words)
+            total_spaces_needed = width - total_chars
+            space_per_gap = total_spaces_needed // (len(words) - 1)
+            extra_spaces = total_spaces_needed % (len(words) - 1)
+            
+            justified = words[0]
+            for j in range(1, len(words)):
+                spaces = space_per_gap + (1 if j <= extra_spaces else 0)
+                justified += " " * spaces + words[j]
+            justified_lines.append(justified)
+        return "\n".join(justified_lines)
+
     with PdfPages(buffer) as pdf:
-        # ---------------- PAGE 1: Header + Profile + Recommendation ----------------
+        # ---------------- PAGE 1: Header + Profile + Recommendation + Math ----------------
         fig, ax = new_page()
         lp = False
         if logo_path and os.path.exists(logo_path):
@@ -1738,14 +1784,26 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         if abs(iv) < 1e-6: iv = 0.0
         iv_pct = iv * 100
         rec = [["Course", cg.best_course],
-               ["Predicted Grade Impact", f"{iv:+.4f} ({iv_pct:+.2f}%)"], # FIX: Clarified terminology
-               ["Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"],
+               ["Predicted Grade Impact", f"{iv:+.4f} ({iv_pct:+.2f}%)"],
+               ["Final Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"],
                ["Credit Hours", d.get('credit_hours', 'Unknown')],
                ["Source", d.get('source_label', '')]]
         if d.get('rscore') is not None:
             rec.append(["R-Score (CATE model)", f"{d['rscore']:+.4f}"])
-        draw_table(ax, yp, "RECOMMENDED COURSE", ["Attribute", "Value"],
+        yp = draw_table(ax, yp, "RECOMMENDED COURSE", ["Attribute", "Value"],
                    rec, [0.5, 0.5])
+
+        math_data = [
+            ["Base Grade (0.5 + profile*features)", f"{d.get('base_grade', 0.5):.3f}"],
+            ["Course Visual Score (C_vis)", f"{d.get('C_vis', 0.5):.2f}"],
+            ["Dataset Avg Visual Score", "0.50 (approx)"],
+            ["CATE (Avg effect)", f"{d.get('cate', 0):+.4f}"],
+            ["Predicted Grade Impact (ITE)", f"{iv:+.4f} ({iv_pct:+.2f}%)"],
+            ["Final Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"]
+        ]
+        draw_table(ax, yp, "MATHEMATICAL BREAKDOWN", ["Variable", "Value"],
+                   math_data, [0.6, 0.4], data_fs=8)
+
         footer(fig, 1)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -1772,19 +1830,21 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         yp = draw_table(ax, yp, "LEARNING STYLE MATCH (Primary Poles)",
                         ["Pole", "Your Score", "Course Feature", "Match"],
                         match_data, [0.28, 0.22, 0.25, 0.25])
+
         ite_data = []
         for c, dd in comparison_results.items():
             m = "*" if c == cg.best_course else " "
             v = dd.get('ite', 0.0)
             if abs(v) < 1e-6: v = 0.0
             v_pct = v * 100
-            ite_data.append([f"{m} {c}", f"{v:+.4f}", f"{v_pct:+.2f}%",
-                             f"{dd.get('legacy_ite', 0):+.3f}",
+            ite_data.append([f"{m} {c}", f"{dd.get('C_vis', 0.5):.2f}", 
+                             f"{dd.get('base_grade', 0.5):.3f}",
+                             f"{v:+.4f}", f"{v_pct:+.2f}%",
                              f"{dd.get('predicted_grade', 0):.3f}"])
-        # FIX: Added an ITE (%) column
+        
         draw_table(ax, yp, "COMPARATIVE ITE RESULTS",
-                   ["Course", "Predicted Impact", "Impact (%)", "Legacy ITE", "Grade"],
-                   ite_data, [0.30, 0.18, 0.15, 0.18, 0.19])
+                   ["Course", "C_vis", "Base Grade", "Impact (ITE)", "Impact (%)", "Final Grade"],
+                   ite_data, [0.25, 0.15, 0.15, 0.15, 0.15, 0.15], data_fs=7)
         footer(fig, 2)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -1798,7 +1858,6 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             raw = dd.get('source_url', '')
             url = clean_source_url(raw)
             if url and url.lower().startswith('http'):
-                # FIX: Truncate middle instead of textwrap.fill
                 url_disp = truncate_middle(url, length=50)
                 pdf_status = "Cached PDF"
             else:
@@ -1819,7 +1878,6 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             ax.text(0.06, yp, f"▸ {plat}", fontsize=9, fontweight='bold',
                     ha='left', va='top', transform=ax.transAxes, color='#1565C0')
             yp -= 0.025
-            
             for cn, _ in courses_list:
                 ax.text(0.10, yp, f"• {cn}", fontsize=8, ha='left', va='top',
                         transform=ax.transAxes)
@@ -1874,10 +1932,11 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         ax.text(0.05, 0.95, "MASTER CAUSAL EXPLANATION",
                 fontsize=14, fontweight='bold', ha='left', va='top', transform=ax.transAxes)
         
-        # FIX: Centered text block to simulate justification
-        wrapped_expl = "\n".join(textwrap.wrap(explanation, width=85))
-        ax.text(0.5, 0.85, wrapped_expl, fontsize=11, ha='center', va='top',
-                multialignment='center', transform=ax.transAxes, linespacing=1.5)
+        justified_expl = justify_text(explanation, width=85)
+        
+        ax.text(0.05, 0.88, justified_expl, fontsize=10, ha='left', va='top',
+                multialignment='left', transform=ax.transAxes, linespacing=1.5,
+                fontfamily='sans-serif')
                 
         footer(fig, 7)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')

@@ -1521,7 +1521,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     resources = get_learning_resources(best_course)
     res_text = "\n".join(f"- {p}: {', '.join(c)}" for p, c in resources.items())
 
-    # Calculate percentages and explicitly build the math string
+    # Calculate percentages and explicitly build the logic string
     best_ite_pct = best_ite * 100
     min_ite_pct = min(ite_vals) * 100
     max_ite_pct = max(ite_vals) * 100
@@ -1702,21 +1702,41 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         ax.text(0.5, y, title, fontsize=title_fs, fontweight='bold',
                 ha='center', va='top', transform=ax.transAxes)
         ty = y - 0.04
-        n_rows = len(data) + 1
-        table_h = max(0.10, row_h * n_rows)
+        
+        # FIX: Auto-wrap text to prevent overlapping
+        wrapped_data = []
+        max_lines = 1
+        for row in data:
+            wrapped_row = []
+            for i, cell in enumerate(row):
+                # Estimate character width based on column width
+                wrap_width = max(10, int(col_widths[i] * 60))
+                wc = textwrap.fill(str(cell), width=wrap_width, 
+                                   break_long_words=True, break_on_hyphens=True)
+                lines = wc.count('\n') + 1
+                if lines > max_lines:
+                    max_lines = lines
+                wrapped_row.append(wc)
+            wrapped_data.append(wrapped_row)
+            
+        n_rows = len(wrapped_data) + 1
+        # Dynamically adjust row height if multi-line
+        actual_row_h = max(0.03, row_h * (max_lines / 1.5)) 
+        table_h = max(0.10, actual_row_h * n_rows)
+        
         colours = [['#d3d3d3'] * len(headers)] + \
-                  [['white'] * len(headers) for _ in range(len(data))]
-        t = ax.table(cellText=[headers] + data, loc='center',
+                  [['white'] * len(headers) for _ in range(len(wrapped_data))]
+        t = ax.table(cellText=[headers] + wrapped_data, loc='center',
                      bbox=[0.5 - bbox_w/2, ty - table_h, bbox_w, table_h],
                      cellColours=colours, colWidths=col_widths)
         t.auto_set_font_size(False)
         t.set_fontsize(data_fs)
-        t.scale(1, 1.4)
+        t.scale(1, 1.2)
         for c in range(len(headers)):
             t[(0, c)].set_text_props(fontweight='bold', ha='center')
         return ty - table_h - 0.05
 
-    def truncate_middle(s, length=50):
+    def truncate_middle(s, length=40):
         if len(s) <= length:
             return s
         return s[:length//2] + "..." + s[-length//2:]
@@ -1745,7 +1765,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         return "\n".join(justified_lines)
 
     with PdfPages(buffer) as pdf:
-        # ---------------- PAGE 1: Header + Profile + Recommendation + Logical ----------------
+        # ---------------- PAGE 1: Header + Profile + Recommendation + Logic ----------------
         fig, ax = new_page()
         lp = False
         if logo_path and os.path.exists(logo_path):
@@ -1793,7 +1813,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         yp = draw_table(ax, yp, "RECOMMENDED COURSE", ["Attribute", "Value"],
                    rec, [0.5, 0.5])
 
-        logical_data = [
+        logic_data = [
             ["Base Grade (0.5 + profile*features)", f"{d.get('base_grade', 0.5):.3f}"],
             ["Course Visual Score (C_vis)", f"{d.get('C_vis', 0.5):.2f}"],
             ["Dataset Avg Visual Score", "0.50 (approx)"],
@@ -1801,8 +1821,9 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             ["Predicted Grade Impact (ITE)", f"{iv:+.4f} ({iv_pct:+.2f}%)"],
             ["Final Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"]
         ]
+        # Renamed to LOGICAL BREAKDOWN
         draw_table(ax, yp, "LOGICAL BREAKDOWN", ["Variable", "Value"],
-                   logical_data, [0.6, 0.4], data_fs=8)
+                   logic_data, [0.6, 0.4], data_fs=8)
 
         footer(fig, 1)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
@@ -1858,7 +1879,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             raw = dd.get('source_url', '')
             url = clean_source_url(raw)
             if url and url.lower().startswith('http'):
-                url_disp = truncate_middle(url, length=50)
+                url_disp = truncate_middle(url, length=40)
                 pdf_status = "Cached PDF"
             else:
                 url_disp = "(semantic fallback — no URL)"

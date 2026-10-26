@@ -1531,7 +1531,7 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
     base_grade_val = results[best_course]['base_grade']
     pred_grade_val = results[best_course]['predicted_grade']
 
-    math_breakdown = (
+    logical_breakdown = (
         f"1. Base Grade = 0.5 + (0.3 * Your Visual ({profile['visual']:.2f}) * Course Visual ({best_feats.get('C_vis', 0.5):.2f})) "
         f"+ (0.2 * Your Sensing ({profile['sensing']:.2f}) * Course Practical ({best_feats.get('C_prac', 0.5):.2f})) "
         f"+ (0.1 * Your Global ({profile['global']:.2f}) * Course Structured ({best_feats.get('C_struct', 0.5):.2f})) = {base_grade_val:.3f}.\n"
@@ -1582,10 +1582,10 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
                 f"Content comparison: {json.dumps(comp)}\n"
                 f"Resources: {res_text}\n\n"
                 f"IMPORTANT NOTE:\n{note}\n\n"
-                f"MATH BREAKDOWN:\n{math_breakdown}\n\n"
+                f"LOGICAL BREAKDOWN:\n{logical_breakdown}\n\n"
                 f"Write a clear, layman-friendly explanation (5-7 sentences). Assume the student "
                 f"does not know statistical jargon. Instead of saying 'ITE' or 'CATE', use "
-                f"'predicted grade impact'. You MUST explicitly include the MATH BREAKDOWN provided above "
+                f"'predicted grade impact'. You MUST explicitly include the LOGICAL BREAKDOWN provided above "
                 f"in your response so the student sees exactly how their grade was calculated. "
                 f"Explain that a value like {best_ite_pct:+.2f}% means a very tiny (practically zero) "
                 f"change in their expected grade. Emphasize that the recommendation is based mainly on "
@@ -1595,13 +1595,13 @@ def get_comparative_analysis(profile, course_features, llm, student_country="Pak
             HumanMessage(content=f"Student: {profile_text}\n"
                                 f"Results: {json.dumps({k: {kk: vv for kk, vv in v.items() if kk != 'cate_ci'} for k, v in results.items()}, indent=2)}\n"
                                 f"Best: {best_course} (ITE={best_ite:+.4f} or {best_ite_pct:+.2f}%, Grade={results[best_course]['predicted_grade']:.3f})\n"
-                                f"Note: {note}\nMath Breakdown: {math_breakdown}")
+                                f"Note: {note}\nLogical Breakdown: {logical_breakdown}")
         ])
         final_exp = safe_llm_call(cp | llm | StrOutputParser(), {})
     except Exception:
         final_exp = (f"Based on causal analysis ({dml_model_name}), **{best_course}** is recommended "
                      f"(Predicted Grade Impact = {best_ite:+.4f} or {best_ite_pct:+.2f}%). {note} Course is {best_nat} "
-                     f"and {best_lab}, fitting your profile ({profile_text}). {math_breakdown} "
+                     f"and {best_lab}, fitting your profile ({profile_text}). {logical_breakdown} "
                      f"Supplementary: {', '.join(resources.keys())}.")
 
     return best_course, results, final_exp, df
@@ -1745,7 +1745,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         return "\n".join(justified_lines)
 
     with PdfPages(buffer) as pdf:
-        # ---------------- PAGE 1: Header + Profile + Recommendation + Math ----------------
+        # ---------------- PAGE 1: Header + Profile + Recommendation + Logical ----------------
         fig, ax = new_page()
         lp = False
         if logo_path and os.path.exists(logo_path):
@@ -1793,7 +1793,7 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
         yp = draw_table(ax, yp, "RECOMMENDED COURSE", ["Attribute", "Value"],
                    rec, [0.5, 0.5])
 
-        math_data = [
+        logical_data = [
             ["Base Grade (0.5 + profile*features)", f"{d.get('base_grade', 0.5):.3f}"],
             ["Course Visual Score (C_vis)", f"{d.get('C_vis', 0.5):.2f}"],
             ["Dataset Avg Visual Score", "0.50 (approx)"],
@@ -1801,8 +1801,8 @@ def generate_pdf_report(profile, comparison_results, explanation, cg, simple_fig
             ["Predicted Grade Impact (ITE)", f"{iv:+.4f} ({iv_pct:+.2f}%)"],
             ["Final Predicted Grade", f"{d.get('predicted_grade', 0):.3f}"]
         ]
-        draw_table(ax, yp, "MATHEMATICAL BREAKDOWN", ["Variable", "Value"],
-                   math_data, [0.6, 0.4], data_fs=8)
+        draw_table(ax, yp, "LOGICAL BREAKDOWN", ["Variable", "Value"],
+                   logical_data, [0.6, 0.4], data_fs=8)
 
         footer(fig, 1)
         pdf.savefig(fig, dpi=150, bbox_inches='tight')
